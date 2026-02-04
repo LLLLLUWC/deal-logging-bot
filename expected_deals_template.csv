@@ -1,0 +1,9 @@
+message_id,notes
+# Add message IDs of known deals here
+# The message_id can be found in the Telegram export JSON
+# or in the replay test CSV output
+#
+# Example:
+# 12345,Company ABC pitch deck
+# 12350,XYZ Protocol intro message
+# 12367,DeFi project with DocSend link
