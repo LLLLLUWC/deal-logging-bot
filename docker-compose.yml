@@ -1,0 +1,16 @@
+services:
+  bot:
+    build: .
+    container_name: deal-logging-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Persist temp files and cookies across restarts
+      - ./temp:/app/temp
+      - ./docsend_cookies.json:/app/docsend_cookies.json:rw
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
