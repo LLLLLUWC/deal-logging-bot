@@ -112,12 +112,17 @@ class MessageHandler:
         sender = group.primary_sender
         external_source = self._extract_external_source_from_group(group)
 
+        # Include forward origin in text so LLM knows who forwarded
+        llm_text = combined_text
+        if external_source:
+            llm_text = f"[Forwarded from {external_source}]\n\n{combined_text}"
+
         # Download and extract PDF attachment if present
         pdf_content = await self._extract_pdf_content(group)
 
         # Run DealExtractor
         result = await self.deal_extractor.extract(
-            text=combined_text,
+            text=llm_text,
             sender=sender,
             pdf_content=pdf_content,
         )
@@ -135,6 +140,14 @@ class MessageHandler:
                 f"Skipped - {result.skipped_reason} "
                 f"(router tokens: {result.router_tokens})"
             )
+            # Scenario 2: Router skipped but deck links were detected
+            deck_links = [
+                lnk for lnk in result.detected_links if getattr(lnk, 'is_deck', False)
+            ]
+            if deck_links:
+                await self._send_review_skipped_with_decks(
+                    group, result.skipped_reason, deck_links
+                )
             return
 
         # Handle error
@@ -154,14 +167,35 @@ class MessageHandler:
                 await self._send_needs_review_notification(group, reasons)
             return
 
+        # Scenario 4: Low confidence
+        low_confidence = (
+            result.router_confidence > 0 and result.router_confidence < 0.6
+        )
+
         # Create Notion entries for each extracted deal
         created_deals = []
         failed_deals = []
 
         for deal in result.deals:
             try:
-                # Use per-deal external source from LLM, fallback to group-level
-                deal_external_source = deal.external_source or external_source
+                # Forward metadata is authoritative for forwarded messages;
+                # for non-forwarded messages, use LLM's per-deal extraction
+                if external_source:
+                    deal_external_source = external_source
+                else:
+                    deal_external_source = deal.external_source
+
+                # Scenario 5: Missing company name or tags (for Telegram report only)
+                missing_info = (
+                    deal.company_name == "Unknown" or not deal.tags
+                )
+
+                # Determine review status (Telegram report only, NOT written to Notion)
+                review_status = None
+                if low_confidence:
+                    review_status = "Low Confidence"
+                elif missing_info or result.needs_review:
+                    review_status = "Needs Review"
 
                 entry = DealEntry(
                     title=deal.company_name,
@@ -171,7 +205,6 @@ class MessageHandler:
                     op_source=sender,
                     external_source=deal_external_source,
                     deck_url=deal.deck_url,
-                    status="Needs Review" if result.needs_review else None,
                 )
 
                 notion_result = self.notion_client.create_deal_with_retry(entry)
@@ -201,6 +234,14 @@ class MessageHandler:
                                 f"{comment_error}"
                             )
 
+                    # Per-deal deck extraction status
+                    deal_deck_extracted = False
+                    if deal.deck_url:
+                        for fd in result.fetched_decks:
+                            if fd.url == deal.deck_url and fd.success:
+                                deal_deck_extracted = True
+                                break
+
                     created_deals.append({
                         "company_name": deal.company_name,
                         "intro": deal.intro,
@@ -208,7 +249,11 @@ class MessageHandler:
                         "deck_url": deal.deck_url,
                         "page_url": notion_result.page_url,
                         "page_id": notion_result.page_id,
-                        "deck_extracted": result.decks_fetched > 0,
+                        "deck_extracted": deal_deck_extracted,
+                        "external_source": deal_external_source,
+                        "status": review_status,
+                        "raise_amount": deal.raise_amount,
+                        "valuation": deal.valuation,
                     })
                 else:
                     logger.error(
@@ -232,23 +277,18 @@ class MessageHandler:
         # Send confirmation
         if created_deals:
             await self._send_confirmation(
-                group,
-                created_deals,
-                result.router_tokens,
-                result.extractor_tokens,
-                needs_review=result.needs_review,
+                group, created_deals, result, low_confidence
             )
 
+            # Scenario 3: Some decks failed to extract
             if failed_deals:
                 failed_names = [d["company_name"] for d in failed_deals]
-                await self._send_partial_failure_warning(group, failed_names)
+                await self._send_partial_failure_warning(group, failed_names, result)
 
         elif failed_deals:
-            error_details = "; ".join(
-                f"{d['company_name']}: {d['error']}" for d in failed_deals
-            )
-            await self._send_error_notification(
-                group, f"Failed to create Notion entries: {error_details[:300]}"
+            # Scenario 6: All Notion entries failed
+            await self._send_notion_failure_with_context(
+                group, failed_deals, combined_text, sender
             )
 
     async def _extract_pdf_content(self, group: MessageGroup) -> Optional[str]:
@@ -385,73 +425,35 @@ class MessageHandler:
         self,
         group: MessageGroup,
         deals: list[dict],
-        router_tokens: int,
-        extractor_tokens: int,
-        needs_review: bool = False,
+        result,
+        low_confidence: bool = False,
     ) -> None:
-        """Send confirmation for extraction results.
+        """Send enhanced confirmation with pipeline details.
 
         Args:
             group: The processed MessageGroup.
             deals: List of created deal dicts.
-            router_tokens: Tokens used by router.
-            extractor_tokens: Tokens used by extractor.
-            needs_review: Whether deck extraction failed and needs manual review.
+            result: Full ExtractionResult.
+            low_confidence: Whether router confidence is low.
         """
         if not group.messages or not deals:
             return
 
         try:
             first_msg = group.messages[0].message
-            total_tokens = router_tokens + extractor_tokens
 
             if len(deals) == 1:
-                deal = deals[0]
-                lines = [f"**{deal['company_name']}**"]
-
-                if deal.get("intro"):
-                    lines.append(deal['intro'])
-
-                if deal.get("tags"):
-                    lines.append(f"Tags: {', '.join(deal['tags'])}")
-
-                if deal.get("deck_extracted"):
-                    lines.append("Deck: Extracted")
-                elif deal.get("deck_url"):
-                    lines.append("Deck: Link saved")
-
-                if needs_review:
-                    lines.append("Deck content could not be extracted, may need manual review")
-
-                lines.append(
-                    f"Tokens: {router_tokens} + {extractor_tokens} = {total_tokens}"
+                confirmation = self._format_single_deal_report(
+                    deals[0], result, low_confidence
                 )
-
-                if deal.get("page_url"):
-                    lines.append(f"\n{deal['page_url']}")
-
-                confirmation = "\n".join(lines)
             else:
-                lines = [f"Logged {len(deals)} deals:"]
-
-                for deal in deals:
-                    deal_line = f"\n- **{deal['company_name']}**"
-                    if deal.get("tags"):
-                        deal_line += f" ({', '.join(deal['tags'][:2])})"
-                    if deal.get("page_url"):
-                        deal_line += f"\n  {deal['page_url']}"
-                    lines.append(deal_line)
-
-                if needs_review:
-                    lines.append(
-                        "\nDeck content could not be extracted, may need manual review"
-                    )
-
-                lines.append(
-                    f"\nTokens: {router_tokens} + {extractor_tokens} = {total_tokens}"
+                confirmation = self._format_multi_deal_report(
+                    deals, result, low_confidence
                 )
 
-                confirmation = "\n".join(lines)
+            # Cap at 4000 chars for Telegram limit
+            if len(confirmation) > 4000:
+                confirmation = confirmation[:3997] + "..."
 
             await self._send_telegram_message_with_retry(
                 first_msg, confirmation, max_retries=3
@@ -459,6 +461,150 @@ class MessageHandler:
 
         except Exception as e:
             logger.error(f"Failed to send confirmation: {e}")
+
+    def _format_single_deal_report(
+        self,
+        deal: dict,
+        result,
+        low_confidence: bool,
+    ) -> str:
+        """Format simplified report for a single deal.
+
+        Args:
+            deal: Created deal dict.
+            result: Full ExtractionResult.
+            low_confidence: Whether router confidence is low.
+
+        Returns:
+            Formatted report string.
+        """
+        # Header with name and raise/valuation
+        name_line = f"Name: {deal['company_name']}"
+        funding_parts = []
+        if deal.get("raise_amount"):
+            funding_parts.append(f"Raise {deal['raise_amount']}")
+        if deal.get("valuation"):
+            funding_parts.append(f"Val {deal['valuation']}")
+        if funding_parts:
+            name_line += f" | {' / '.join(funding_parts)}"
+
+        lines = ["Deal Logged", name_line]
+
+        if deal.get("intro"):
+            lines.append(deal["intro"])
+
+        if deal.get("tags"):
+            lines.append("")
+            lines.append(f"Tags: {', '.join(deal['tags'])}")
+
+        if deal.get("deck_extracted"):
+            lines.append("Deck: Extracted")
+        elif deal.get("deck_url"):
+            lines.append("Deck: Link saved (content not extracted)")
+
+        # Failed deck warnings
+        failed_decks = [d for d in result.fetched_decks if not d.success]
+        if failed_decks:
+            lines.append("")
+            for fd in failed_decks[:3]:
+                url_short = fd.url[:50] + "..." if len(fd.url) > 50 else fd.url
+                error_msg = fd.error or "unknown error"
+                lines.append(f"DECK FAILED: {url_short}")
+                lines.append(f"  {error_msg}")
+
+        # Status section
+        status_parts = []
+        if result.decks_detected > 0:
+            status_parts.append(
+                f"Deck: {result.decks_fetched}/{result.decks_detected} extracted"
+            )
+        if low_confidence:
+            status_parts.append("Low Confidence")
+        if deal.get("status") == "Needs Review":
+            status_parts.append("Needs Review")
+
+        if status_parts:
+            lines.append("")
+            lines.append("--Status--")
+            lines.extend(status_parts)
+
+        # Notion link
+        if deal.get("page_url"):
+            lines.append("")
+            lines.append(deal["page_url"])
+
+        return "\n".join(lines)
+
+    def _format_multi_deal_report(
+        self,
+        deals: list[dict],
+        result,
+        low_confidence: bool,
+    ) -> str:
+        """Format simplified report for multiple deals.
+
+        Args:
+            deals: List of created deal dicts.
+            result: Full ExtractionResult.
+            low_confidence: Whether router confidence is low.
+
+        Returns:
+            Formatted report string.
+        """
+        lines = [f"{len(deals)} Deals Logged"]
+
+        for i, deal in enumerate(deals, 1):
+            # Name with raise/valuation
+            name_part = deal['company_name']
+            funding_parts = []
+            if deal.get("raise_amount"):
+                funding_parts.append(f"Raise {deal['raise_amount']}")
+            if deal.get("valuation"):
+                funding_parts.append(f"Val {deal['valuation']}")
+            if funding_parts:
+                name_part += f" | {' / '.join(funding_parts)}"
+
+            tags_str = ""
+            if deal.get("tags"):
+                tags_str = f" ({', '.join(deal['tags'][:2])})"
+
+            lines.append(f"\n{i}. {name_part}{tags_str}")
+
+            if deal.get("deck_extracted"):
+                lines.append("   Deck: Extracted")
+            elif deal.get("deck_url"):
+                lines.append("   Deck: Link saved")
+
+            if deal.get("page_url"):
+                lines.append(f"   {deal['page_url']}")
+
+        # Failed deck warnings
+        failed_decks = [d for d in result.fetched_decks if not d.success]
+        if failed_decks:
+            lines.append("")
+            for fd in failed_decks[:3]:
+                url_short = fd.url[:50] + "..." if len(fd.url) > 50 else fd.url
+                error_msg = fd.error or "unknown error"
+                lines.append(f"DECK FAILED: {url_short}")
+                lines.append(f"  {error_msg}")
+            if len(failed_decks) > 3:
+                lines.append(f"  +{len(failed_decks) - 3} more failed")
+
+        # Status section
+        status_parts = []
+        if result.decks_detected > 0:
+            status_parts.append(
+                f"Deck: {result.decks_fetched}/{result.decks_detected} extracted"
+            )
+        if low_confidence:
+            status_parts.append("Low Confidence")
+
+        if status_parts:
+            lines.append("")
+            lines.append("--Status--")
+            lines.extend(status_parts)
+
+        return "\n".join(lines)
 
     async def _send_telegram_message_with_retry(
         self,
@@ -483,7 +629,6 @@ class MessageHandler:
                 await message.reply_text(
                     text,
                     disable_web_page_preview=True,
-                    parse_mode="Markdown",
                 )
                 return True
             except Exception as e:
@@ -524,12 +669,14 @@ class MessageHandler:
         self,
         group: MessageGroup,
         failed_company_names: list[str],
+        result=None,
     ) -> None:
         """Send a warning about partially failed deal logging.
 
         Args:
             group: The MessageGroup being processed.
             failed_company_names: List of company names that failed.
+            result: Optional ExtractionResult for deck failure details.
         """
         if not group.messages or not failed_company_names:
             return
@@ -540,9 +687,105 @@ class MessageHandler:
             if len(failed_company_names) > 5:
                 names_str += f" (+{len(failed_company_names) - 5} more)"
 
-            await first_msg.reply_text(f"Some deals failed to log: {names_str}")
+            lines = [f"Some deals failed to log: {names_str}"]
+
+            # Add deck failure details if available
+            if result and result.fetched_decks:
+                failed_decks = [d for d in result.fetched_decks if not d.success]
+                for deck in failed_decks[:3]:
+                    url_short = deck.url[:40] + "..." if len(deck.url) > 40 else deck.url
+                    lines.append(f"  Deck failed: {url_short} ({deck.error or 'unknown'})")
+
+            await first_msg.reply_text("\n".join(lines))
         except Exception as e:
             logger.error(f"Failed to send partial failure warning: {e}")
+
+    async def _send_review_skipped_with_decks(
+        self,
+        group: MessageGroup,
+        reason: str,
+        deck_links: list,
+    ) -> None:
+        """Send notification when router skipped but deck links were detected.
+
+        Scenario 2: Message classified as non-deal but contains deck links,
+        suggesting it might actually be a deal worth reviewing.
+
+        Args:
+            group: The MessageGroup being processed.
+            reason: Router's skip reason.
+            deck_links: List of DetectedLink objects that are decks.
+        """
+        if not group.messages:
+            return
+
+        try:
+            first_msg = group.messages[0].message
+            lines = [
+                "Skipped (may need review)",
+                f"Reason: {reason}",
+                "",
+                "Deck link(s) detected:",
+            ]
+
+            for link in deck_links[:3]:
+                lt = getattr(link, 'link_type', None)
+                type_label = lt.value if lt and hasattr(lt, 'value') else "link"
+                url_display = link.url
+                if len(url_display) > 50:
+                    url_display = url_display[:47] + "..."
+                lines.append(f"  {type_label}: {url_display}")
+
+            if len(deck_links) > 3:
+                lines.append(f"  +{len(deck_links) - 3} more")
+
+            await first_msg.reply_text("\n".join(lines))
+        except Exception as e:
+            logger.error(f"Failed to send skipped-with-decks notification: {e}")
+
+    async def _send_notion_failure_with_context(
+        self,
+        group: MessageGroup,
+        failed_deals: list[dict],
+        original_text: str,
+        sender: str,
+    ) -> None:
+        """Send notification when all Notion entries failed, with original message context.
+
+        Scenario 6: Deals were extracted successfully but all Notion API calls failed.
+
+        Args:
+            group: The MessageGroup being processed.
+            failed_deals: List of failed deal dicts with company_name and error.
+            original_text: Original combined message text.
+            sender: Original message sender.
+        """
+        if not group.messages:
+            return
+
+        try:
+            first_msg = group.messages[0].message
+            lines = ["Failed to create Notion entries"]
+
+            for d in failed_deals[:3]:
+                lines.append(f"  {d['company_name']}: {d.get('error', 'unknown')[:100]}")
+
+            if len(failed_deals) > 3:
+                lines.append(f"  +{len(failed_deals) - 3} more")
+
+            # Append original text excerpt for manual logging
+            lines.append("")
+            lines.append(f"From: {sender}")
+            text_preview = original_text[:500] if len(original_text) > 500 else original_text
+            lines.append(f"Message: {text_preview}")
+
+            msg = "\n".join(lines)
+            if len(msg) > 4000:
+                msg = msg[:3997] + "..."
+
+            await first_msg.reply_text(msg)
+        except Exception as e:
+            logger.error(f"Failed to send notion-failure notification: {e}")
 
     async def _send_needs_review_notification(
         self,

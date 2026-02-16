@@ -226,8 +226,11 @@ class DealExtractor:
                 pdf_content=pdf_content,
             )
 
-            # Step 4: Set deck stats and needs_review flag
+            # Step 4: Set deck stats, pipeline data, and needs_review flag
             result.decks_detected = len(detected_links)
+            result.decks_fetched = decks_fetched  # Override LLM layer value
+            result.detected_links = detected_links
+            result.fetched_decks = fetched_decks
 
             if result.decks_detected > 0 and decks_fetched == 0:
                 result.needs_review = True
@@ -377,15 +380,26 @@ class DealExtractor:
                     )
                 result = await self.docsend_extractor.extract(link.url, password)
 
-                # If we got a PDF, extract text
+                # If we got a PDF, extract text via OCR
                 if result.success and result.pdf_path:
                     pdf_result = self.pdf_extractor.extract(result.pdf_path)
-                    if pdf_result.success:
+                    if pdf_result.success and pdf_result.text_content:
                         return FetchedDeck(
                             url=link.url,
                             success=True,
                             content=pdf_result.text_content,
                             title=result.title or pdf_result.title,
+                            pdf_path=result.pdf_path,
+                        )
+                    else:
+                        # PDF downloaded but text extraction failed (e.g. OCR not installed)
+                        error_detail = pdf_result.error or "empty text (image-only PDF, OCR may be needed)"
+                        logger.warning(f"DocSend PDF text extraction failed: {error_detail}")
+                        return FetchedDeck(
+                            url=link.url,
+                            success=False,
+                            error=f"PDF downloaded but text extraction failed: {error_detail}",
+                            title=result.title,
                             pdf_path=result.pdf_path,
                         )
                 return result

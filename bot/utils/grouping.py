@@ -206,6 +206,23 @@ class MessageGrouper:
             if msg.reply_to_message_id not in current_group.get_all_message_ids():
                 return True
 
+        # Forwarded message from a different source than the group
+        if msg.is_forwarded:
+            last_msg = current_group.messages[-1]
+            # If the previous message was also forwarded, check if from different source
+            if last_msg.is_forwarded:
+                if self._get_forward_origin(msg.message) != self._get_forward_origin(last_msg.message):
+                    return True
+            else:
+                # Previous was not forwarded, this one is — different context
+                return True
+
+        # Previous was forwarded but this one is not — different context
+        if not msg.is_forwarded and current_group.messages[-1].is_forwarded:
+            # Unless it's a reply to the group (e.g., commenting on a forward)
+            if msg.reply_to_message_id not in current_group.get_all_message_ids():
+                return True
+
         # Long gap since last message (more than 2 minutes)
         if last_time:
             gap = (now - last_time).total_seconds()
@@ -217,6 +234,46 @@ class MessageGrouper:
             return True
 
         return False
+
+    @staticmethod
+    def _get_forward_origin(message: Message) -> Optional[str]:
+        """Get a string identifier for a message's forward origin.
+
+        Returns a comparable string so we can detect when consecutive
+        forwarded messages come from different sources.
+        """
+        forward_origin = getattr(message, 'forward_origin', None)
+        if forward_origin:
+            origin_type = getattr(forward_origin, 'type', None)
+            if origin_type == 'user':
+                user = getattr(forward_origin, 'sender_user', None)
+                if user:
+                    return f"user:{user.id}"
+            elif origin_type == 'hidden_user':
+                name = getattr(forward_origin, 'sender_user_name', None)
+                if name:
+                    return f"hidden:{name}"
+            elif origin_type == 'chat':
+                chat = getattr(forward_origin, 'sender_chat', None)
+                if chat:
+                    return f"chat:{chat.id}"
+            elif origin_type == 'channel':
+                chat = getattr(forward_origin, 'chat', None)
+                if chat:
+                    return f"channel:{chat.id}"
+
+        # Fallback: legacy attributes
+        forward_from = getattr(message, 'forward_from', None)
+        if forward_from:
+            return f"user:{forward_from.id}"
+        forward_name = getattr(message, 'forward_sender_name', None)
+        if forward_name:
+            return f"hidden:{forward_name}"
+        forward_chat = getattr(message, 'forward_from_chat', None)
+        if forward_chat:
+            return f"chat:{forward_chat.id}"
+
+        return None
 
     def _should_process_immediately(
         self, group: MessageGroup, latest_msg: BufferedMessage

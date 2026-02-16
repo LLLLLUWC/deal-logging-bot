@@ -15,6 +15,8 @@ class Deal:
     detailed_content: str = ""
     deck_url: Optional[str] = None
     external_source: Optional[str] = None
+    raise_amount: Optional[str] = None   # e.g. "$5M", "10M"
+    valuation: Optional[str] = None      # e.g. "$50M", "100M"
 
     def to_dict(self) -> dict:
         """Convert to dictionary."""
@@ -25,6 +27,8 @@ class Deal:
             "detailed_content": self.detailed_content,
             "deck_url": self.deck_url,
             "external_source": self.external_source,
+            "raise_amount": self.raise_amount,
+            "valuation": self.valuation,
         }
 
 
@@ -42,9 +46,17 @@ class ExtractionResult:
     extractor_tokens: int = 0
     total_tokens: int = 0
 
+    # Router details
+    router_confidence: float = 0.0
+    router_reason: str = ""
+
     # Stats
     decks_detected: int = 0
     decks_fetched: int = 0
+
+    # Pipeline transparency (list types avoid circular imports)
+    detected_links: list = field(default_factory=list)   # list[DetectedLink]
+    fetched_decks: list = field(default_factory=list)     # list[FetchedDeck]
 
     # Review flag
     needs_review: bool = False

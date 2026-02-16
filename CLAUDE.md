@@ -4,6 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development Environment
 
+**Python Version**: Requires **Python >= 3.10**. The Docker image uses Python 3.11. Python 3.9 has `asyncio` event loop compatibility issues with `python-telegram-bot`.
+
+```bash
+# Check version
+uv run python --version
+
+# If < 3.10, upgrade:
+uv python install 3.11
+uv venv --python 3.11
+uv pip install -r requirements.txt
+```
+
 **IMPORTANT**: This project uses `uv` for Python environment management. Always use `uv run` to execute Python commands:
 
 ```bash

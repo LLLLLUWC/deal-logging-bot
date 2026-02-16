@@ -122,6 +122,8 @@ class LLMExtractor:
                 skipped_reason=router_decision.reason,
                 router_tokens=router_tokens,
                 total_tokens=router_tokens,
+                router_confidence=router_decision.confidence,
+                router_reason=router_decision.reason,
             )
 
         # Stage 2: Extractor
@@ -150,6 +152,8 @@ class LLMExtractor:
             extractor_tokens=extractor_tokens,
             total_tokens=total_tokens,
             decks_fetched=decks_fetched,
+            router_confidence=router_decision.confidence,
+            router_reason=router_decision.reason,
         )
 
     async def _run_router(
@@ -327,6 +331,8 @@ class LLMExtractor:
                     detailed_content=deal_data.get("detailed_content", ""),
                     deck_url=deal_data.get("deck_url"),
                     external_source=deal_data.get("external_source"),
+                    raise_amount=deal_data.get("raise_amount"),
+                    valuation=deal_data.get("valuation"),
                 )
                 deals.append(deal)
 

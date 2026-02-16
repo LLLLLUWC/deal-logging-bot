@@ -84,7 +84,9 @@ Return ONLY valid JSON:
       "intro": "Brief description under 140 chars",
       "detailed_content": "# Company\\n\\n## Overview\\n...",
       "deck_url": "https://docsend.com/...",
-      "external_source": "Person or company who referred this deal"
+      "external_source": "Person or company who referred this deal",
+      "raise_amount": "$5M",
+      "valuation": "$50M"
     }}
   ]
 }}
@@ -109,6 +111,7 @@ Return ONLY valid JSON:
    - Forwarded message attribution
    - If the message lists multiple deals, each may have different sources
    - Leave empty if no external referrer is mentioned
+9. Extract raise_amount and valuation if mentioned (e.g., "raising $5M", "at $50M valuation", "Series A $10M"). Use compact format like "$5M", "$50M". Leave null if not mentioned
 
 Return ONLY valid JSON, no explanations.
 """

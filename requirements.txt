@@ -1,4 +1,6 @@
 # Deal Logging Bot Dependencies
+# Requires Python >= 3.10 (asyncio compatibility with python-telegram-bot)
+# Docker image uses Python 3.11
 python-telegram-bot>=20.7
 notion-client>=2.2.1
 openai>=1.12.0  # Used for Kimi API (OpenAI-compatible)

@@ -50,7 +50,7 @@ class DealLoggingBot:
         self.config = config
         self.application = None
         self.deal_extractor = None
-        self._shutdown_event = asyncio.Event()
+        self._shutdown_event = None
         self._cleanup_task = None
 
     def setup(self) -> None:
@@ -136,6 +136,12 @@ class DealLoggingBot:
 
     async def run(self) -> None:
         """Run the bot."""
+        self._shutdown_event = asyncio.Event()
+
+        # Setup must happen inside asyncio.run() for Python 3.9 compatibility
+        # (asyncio primitives bind to the running loop at creation time)
+        self.setup()
+
         logger.info("Starting bot...")
 
         await self.application.initialize()
@@ -198,7 +204,8 @@ class DealLoggingBot:
 
     def request_shutdown(self) -> None:
         """Request bot shutdown."""
-        self._shutdown_event.set()
+        if self._shutdown_event:
+            self._shutdown_event.set()
 
 
 def setup_signal_handlers(bot: DealLoggingBot) -> None:
@@ -229,7 +236,6 @@ def main() -> None:
         logger.warning(warning)
 
     bot = DealLoggingBot(config)
-    bot.setup()
 
     setup_signal_handlers(bot)
 
