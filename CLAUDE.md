@@ -36,7 +36,7 @@ This repository contains three related components:
 - URL detection and classification (zero external dependencies)
 - Content extraction from DocSend, Google Slides/Docs, PDF URLs
 - Two-stage LLM analysis (Router + Extractor)
-- Structured deal information output
+- Structured deal information output with token usage tracking
 
 ### Architecture
 
@@ -187,6 +187,7 @@ KIMI_API_KEY=sk-xxx                  # Moonshot AI API key
 KIMI_MODEL=kimi-k2.5                 # LLM model (default: kimi-k2.5)
 DOCSEND_EMAIL=team@company.com       # For DocSend gates
 DOCSEND_PASSWORD=xxx                 # For password-protected decks
+DOCSEND_EXTRACTION_MODE=auto         # "auto" (API first, Playwright fallback) or "playwright"
 MESSAGE_GROUPING_TIMEOUT=30          # Seconds before processing
 OCR_LANGUAGE=chi_sim+eng             # Tesseract language
 TELEGRAM_PROXY=socks5://127.0.0.1:1080  # Proxy for China
@@ -236,10 +237,18 @@ The bot expects these properties:
 | Pitch.com | pitch.com | Yes | 88 |
 | PDF Direct | *.pdf | Yes | 85 |
 | Google Drive | drive.google.com, docs.google.com | Yes | 70 |
+| Dropbox | dropbox.com | Yes | 60 |
+| Notion | notion.so, notion.site | No | 50 |
 | Loom | loom.com | Yes | 40 |
 | YouTube | youtube.com, youtu.be | No | 35 |
-| Notion | notion.so, notion.site | No | 50 |
+| Dune | dune.com | No | 15 |
+| Website | (general URLs) | No | 10 |
+| LinkedIn | linkedin.com | No | 5 |
+| Twitter | twitter.com, x.com | No | 5 |
 | Calendar | cal.com, calendly.com | No | 3 |
+| Unknown | (unrecognized) | No | 1 |
+
+LinkDetector also automatically unwraps redirect/tracking URLs from services like getcabal.com, Mailchimp, HubSpot, SendGrid, etc.
 
 ### Message Grouping
 
@@ -286,6 +295,75 @@ extractor.cleanup_old_files(max_age_minutes=60)
 
 # Check temp directory size
 total_bytes, file_count = extractor.get_temp_dir_size()
+```
+
+---
+
+## Docker Deployment
+
+### Files
+
+- `Dockerfile` - Python 3.11 slim image with Playwright + OCR dependencies
+- `docker-compose.yml` - Container orchestration with volume mounts
+- `.dockerignore` - Excludes .env, __pycache__, .venv, etc.
+
+### VPS Deployment
+
+```bash
+# 1. Clone repository (requires public repo or SSH key)
+git clone https://github.com/LLLLLUWC/deal-logging-bot.git
+cd deal-logging-bot
+
+# 2. Create environment file
+cp .env.example .env
+nano .env  # Fill in API keys
+
+# 3. Create cookie file (for DocSend session persistence)
+touch docsend_cookies.json
+
+# 4. Start the bot
+docker-compose up -d
+
+# 5. View logs
+docker-compose logs -f
+```
+
+### Switching Environments (Test → Production)
+
+To switch to a new Telegram group and/or Notion workspace:
+
+1. **Get new Telegram Group ID**
+   - Add bot to the new group
+   - Send a message, then visit: `https://api.telegram.org/bot<TOKEN>/getUpdates`
+   - Find `"chat":{"id":-100xxxxxxxxxx}`
+
+2. **Create new Notion Integration** (if changing accounts)
+   - Go to https://www.notion.so/my-integrations
+   - Create new integration, copy the `secret_xxx` token
+   - Create database with required schema (see Notion Database Schema section)
+   - Connect integration to database via **···** → **Connections**
+
+3. **Update .env on VPS**
+   ```bash
+   nano .env
+   # Update: TELEGRAM_GROUP_ID, NOTION_API_KEY, NOTION_DATABASE_ID
+   ```
+
+4. **Restart**
+   ```bash
+   docker-compose down
+   docker-compose up -d
+   ```
+
+### Docker Commands Reference
+
+```bash
+docker-compose up -d      # Start in background
+docker-compose down       # Stop
+docker-compose logs -f    # Follow logs
+docker-compose restart    # Restart
+docker-compose pull       # Update image (after git pull)
+docker-compose up -d --build  # Rebuild after code changes
 ```
 
 ---
@@ -338,8 +416,13 @@ Tools to analyze historical Telegram messages and measure classification accurac
 ```
 bot/analysis/
 ├── telegram_analyzer.py       # Deep analysis of message patterns
-└── replay_test.py             # Replay messages through bot logic
+├── replay_test.py             # Replay messages through bot logic
+└── test_multi_deal.py         # Unit tests for multi-deck detection
 ```
+
+Root-level scripts:
+- `analyze_export.py` - CLI entry point for analysis
+- `expected_deals_template.csv` - Template for accuracy testing (F1 score calculation)
 
 ### Usage
 

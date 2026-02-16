@@ -149,6 +149,9 @@ class MessageHandler:
                 f"(tokens: router={result.router_tokens}, "
                 f"extractor={result.extractor_tokens})"
             )
+            if result.needs_review:
+                reasons = "; ".join(result.review_reasons[:3])
+                await self._send_needs_review_notification(group, reasons)
             return
 
         # Create Notion entries for each extracted deal
@@ -168,6 +171,7 @@ class MessageHandler:
                     op_source=sender,
                     external_source=deal_external_source,
                     deck_url=deal.deck_url,
+                    status="Needs Review" if result.needs_review else None,
                 )
 
                 notion_result = self.notion_client.create_deal_with_retry(entry)
@@ -232,6 +236,7 @@ class MessageHandler:
                 created_deals,
                 result.router_tokens,
                 result.extractor_tokens,
+                needs_review=result.needs_review,
             )
 
             if failed_deals:
@@ -382,6 +387,7 @@ class MessageHandler:
         deals: list[dict],
         router_tokens: int,
         extractor_tokens: int,
+        needs_review: bool = False,
     ) -> None:
         """Send confirmation for extraction results.
 
@@ -390,6 +396,7 @@ class MessageHandler:
             deals: List of created deal dicts.
             router_tokens: Tokens used by router.
             extractor_tokens: Tokens used by extractor.
+            needs_review: Whether deck extraction failed and needs manual review.
         """
         if not group.messages or not deals:
             return
@@ -413,6 +420,9 @@ class MessageHandler:
                 elif deal.get("deck_url"):
                     lines.append("Deck: Link saved")
 
+                if needs_review:
+                    lines.append("Deck content could not be extracted, may need manual review")
+
                 lines.append(
                     f"Tokens: {router_tokens} + {extractor_tokens} = {total_tokens}"
                 )
@@ -431,6 +441,11 @@ class MessageHandler:
                     if deal.get("page_url"):
                         deal_line += f"\n  {deal['page_url']}"
                     lines.append(deal_line)
+
+                if needs_review:
+                    lines.append(
+                        "\nDeck content could not be extracted, may need manual review"
+                    )
 
                 lines.append(
                     f"\nTokens: {router_tokens} + {extractor_tokens} = {total_tokens}"
@@ -528,6 +543,29 @@ class MessageHandler:
             await first_msg.reply_text(f"Some deals failed to log: {names_str}")
         except Exception as e:
             logger.error(f"Failed to send partial failure warning: {e}")
+
+    async def _send_needs_review_notification(
+        self,
+        group: MessageGroup,
+        reasons: str,
+    ) -> None:
+        """Send notification when deck links were detected but extraction failed.
+
+        Args:
+            group: The MessageGroup being processed.
+            reasons: Summary of extraction failure reasons.
+        """
+        if not group.messages:
+            return
+
+        try:
+            first_msg = group.messages[0].message
+            text = "Deck link(s) detected but content could not be extracted, may need manual review."
+            if reasons:
+                text += f"\nReason: {reasons[:300]}"
+            await first_msg.reply_text(text)
+        except Exception as e:
+            logger.error(f"Failed to send needs-review notification: {e}")
 
     def _should_process_with_reason(self, message: Message) -> tuple[bool, str]:
         """Determine if a message should be processed, with reason.

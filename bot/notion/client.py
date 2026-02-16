@@ -20,6 +20,7 @@ class DealEntry:
     deck_file_path: Optional[str] = None  # Local PDF path for upload
     intro: str = ""  # Short intro (140 chars) for Intro field
     detailed_content: str = ""  # Full Markdown for page body
+    status: Optional[str] = None  # e.g. "Needs Review"
 
     def __post_init__(self):
         if self.tags is None:
@@ -70,6 +71,7 @@ class NotionClient:
             "external_source": "External Source",  # rich_text
             "deck": "Deck",  # files (Files & Media for PDF upload)
             "intro": "Intro",  # rich_text (short intro)
+            "status": "Status",  # select
         }
 
         # Hardcoded property types for when we can't read the database schema
@@ -413,6 +415,7 @@ class NotionClient:
                 "external_source": deal.external_source,
                 "deck": deal.deck_file_path or deal.deck_url,  # Prefer local file
                 "intro": deal.intro,
+                "status": deal.status,
             }
 
             for field_key, value in field_values.items():

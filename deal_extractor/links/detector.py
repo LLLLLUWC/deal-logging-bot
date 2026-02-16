@@ -221,7 +221,7 @@ class LinkDetector:
             True if the link is likely a pitch deck.
         """
         # These are always deck links
-        if link_type in (LinkType.DOCSEND, LinkType.PAPERMARK, LinkType.PITCH_COM):
+        if link_type in (LinkType.DOCSEND, LinkType.PAPERMARK, LinkType.PITCH_COM, LinkType.NOTION):
             return True
 
         # Direct PDF links are likely decks

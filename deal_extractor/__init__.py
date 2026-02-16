@@ -32,7 +32,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .extractors import DocSendExtractor, GoogleSlidesExtractor, PDFExtractor
+from .extractors import DocSendExtractor, GenericWebExtractor, GoogleSlidesExtractor, PDFExtractor
 from .links import DetectedLink, LinkDetector, LinkType
 from .llm import LLMExtractor
 from .models import Deal, ExtractionResult, FetchedDeck, RouterDecision
@@ -51,6 +51,7 @@ __all__ = [
     "RouterDecision",
     # Extractors (for standalone use)
     "DocSendExtractor",
+    "GenericWebExtractor",
     "GoogleSlidesExtractor",
     "LinkDetector",
     "LLMExtractor",
@@ -162,6 +163,12 @@ class DealExtractor:
             pdf_extractor=self.pdf_extractor,
         )
 
+        # Generic web extractor (fallback for unsupported link types)
+        self.generic_extractor = GenericWebExtractor(
+            temp_dir=self.temp_dir / "web",
+            pdf_extractor=self.pdf_extractor,
+        )
+
         logger.info(
             f"DealExtractor initialized: "
             f"model={llm_model or 'kimi-k2.5'}, "
@@ -219,6 +226,15 @@ class DealExtractor:
                 pdf_content=pdf_content,
             )
 
+            # Step 4: Set deck stats and needs_review flag
+            result.decks_detected = len(detected_links)
+
+            if result.decks_detected > 0 and decks_fetched == 0:
+                result.needs_review = True
+                result.review_reasons = [
+                    f"{d.url}: {d.error}" for d in fetched_decks if not d.success
+                ]
+
             return result
 
         finally:
@@ -261,7 +277,7 @@ class DealExtractor:
         cutoff_time = time.time() - (max_age * 60)
         deleted = 0
 
-        for subdir in ["pdf", "docsend", "google", "pdf_downloads"]:
+        for subdir in ["pdf", "docsend", "google", "web", "pdf_downloads"]:
             dir_path = self.temp_dir / subdir
             if not dir_path.exists():
                 continue
@@ -380,19 +396,10 @@ class DealExtractor:
             elif link.link_type == LinkType.GOOGLE_DRIVE:
                 return await self.google_extractor.extract(link.url)
 
-            elif link.link_type == LinkType.PAPERMARK:
-                return FetchedDeck(
-                    url=link.url,
-                    success=False,
-                    error="Papermark extraction not yet supported",
-                )
-
             else:
-                return FetchedDeck(
-                    url=link.url,
-                    success=False,
-                    error=f"Unsupported deck type: {link.link_type.value}",
-                )
+                # Fallback: use generic web extractor for all other deck types
+                # (Notion, Papermark, Pitch.com, Loom, Dropbox, etc.)
+                return await self.generic_extractor.extract(link.url, password)
 
         except Exception as e:
             logger.exception(f"Fetch error: {e}")

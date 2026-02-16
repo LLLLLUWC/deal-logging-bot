@@ -43,7 +43,12 @@ class ExtractionResult:
     total_tokens: int = 0
 
     # Stats
+    decks_detected: int = 0
     decks_fetched: int = 0
+
+    # Review flag
+    needs_review: bool = False
+    review_reasons: list[str] = field(default_factory=list)
 
 
 @dataclass
