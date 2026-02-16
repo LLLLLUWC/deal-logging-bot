@@ -46,9 +46,9 @@ This repository contains three related components:
 `deal_extractor/` is a **standalone, reusable module** that can be extracted and used in other projects. It provides:
 
 - URL detection and classification (zero external dependencies)
-- Content extraction from DocSend, Google Slides/Docs, PDF URLs
-- Two-stage LLM analysis (Router + Extractor)
-- Structured deal information output with token usage tracking
+- Content extraction from DocSend, Google Slides/Docs, PDF URLs, generic web pages (Jina Reader fallback)
+- Two-stage LLM analysis (Router + Extractor) with confidence scoring
+- Structured deal information output with raise/valuation, token usage tracking, and pipeline transparency
 
 ### Architecture
 
@@ -62,8 +62,9 @@ deal_extractor/
 ├── extractors/
 │   ├── base.py              # Abstract base class
 │   ├── docsend.py           # DocSend extraction (API + Playwright)
+│   ├── generic_web.py       # Generic web extraction (Jina Reader fallback)
 │   ├── google_slides.py     # Google Slides/Docs export
-│   └── pdf.py               # PDF text extraction
+│   └── pdf.py               # PDF text extraction (pypdf + OCR via pdf2llm)
 └── llm/
     ├── extractor.py         # Two-stage LLM extractor
     └── prompts.py           # Prompt templates & tags
@@ -93,6 +94,11 @@ if result.success:
         print(f"Tags: {deal.tags}")
         print(f"Intro: {deal.intro}")
         print(f"Deck: {deal.deck_url}")
+        print(f"Raise: {deal.raise_amount}")
+        print(f"Valuation: {deal.valuation}")
+    # Pipeline transparency
+    print(f"Router confidence: {result.router_confidence}")
+    print(f"Decks: {result.decks_fetched}/{result.decks_detected}")
 ```
 
 ### Dependencies (for standalone use)
@@ -103,11 +109,14 @@ aiohttp         # DocSend API calls
 httpx           # Google Slides/PDF downloads
 Pillow          # Image processing
 pypdf           # PDF text extraction
+html2text       # HTML to text conversion (Jina Reader)
 
 # Optional
 img2pdf         # Image to PDF conversion
 playwright      # Browser automation (DocSend fallback)
 playwright-stealth  # Anti-detection
+ocrmypdf        # OCR for image-based PDFs
+tesseract       # OCR engine (system dependency)
 ```
 
 ### Moving to Another Project
@@ -153,19 +162,23 @@ Telegram Message
     ↓
 MessageHandler.handle_message()
     ↓
-MessageGrouper (groups related messages)
+MessageGrouper (groups by sender + forward origin)
     ↓
 _on_group_ready() callback
+    ├→ Extract forward metadata (external_source)
+    ├→ Prepend "[Forwarded from X]" to LLM text
     ↓
 DealExtractor.extract()
     ├→ LinkDetector.get_all_deck_links()
-    ├→ Parallel fetch: DocSendExtractor, PDFExtractor, GoogleExtractor
+    ├→ Fetch decks: DocSend, PDF, Google, GenericWeb (Jina Reader)
     ├→ LLMExtractor._run_router() [Stage 1: Is this a deal?]
-    └→ LLMExtractor._run_extractor() [Stage 2: Extract info]
+    └→ LLMExtractor._run_extractor() [Stage 2: Extract info + raise/valuation]
+    ↓
+Human intervention check (5 scenarios)
     ↓
 NotionClient.create_deal_with_retry()
     ↓
-Telegram reply with confirmation
+Telegram reply (simplified report)
 ```
 
 ### Running the Bot
@@ -208,6 +221,22 @@ TELEGRAM_PROXY=socks5://127.0.0.1:1080  # Proxy for China
 CLEANUP_AFTER_EXTRACT=false          # Keep files until periodic cleanup
 CLEANUP_MAX_AGE_MINUTES=1440         # Delete files older than 24 hours
 CLEANUP_INTERVAL_MINUTES=1440        # Run periodic cleanup every 24 hours
+```
+
+### Telegram Report Format
+
+```
+Deal Logged
+Name: CompanyX | Raise $5M / Val $50M
+Brief intro text under 140 chars
+
+Tags: DeFi, Infrastructure
+Deck: Extracted
+
+--Status--
+Deck: 1/1 extracted
+
+https://www.notion.so/CompanyX-xxx
 ```
 
 ### Notion Database Schema
@@ -267,8 +296,27 @@ LinkDetector also automatically unwraps redirect/tracking URLs from services lik
 Related messages are grouped together using:
 - Thread/reply detection
 - Same sender within 2 minutes
+- Forward origin detection (different forward sources split into separate groups)
 - 3-second quick timeout for single messages
 - 30-second max timeout before processing
+
+### Source Attribution
+
+External source (who referred the deal) is resolved in priority order:
+1. **Telegram forward metadata** (authoritative for forwarded messages — e.g., Xavier forwarded a deal)
+2. **LLM extraction** (for non-forwarded messages — detects "via Sarah", "From John:" in text)
+
+### Human Intervention Scenarios
+
+The bot notifies in Telegram (not Notion) when manual review may be needed:
+
+| Scenario | Trigger | Action |
+|----------|---------|--------|
+| Skipped with decks | Router says not-a-deal but deck links found | Notify with deck URLs |
+| Partial deck failure | Some decks extracted, some failed | Show failed deck details |
+| Low confidence | Router confidence < 0.6 | Mark "Low Confidence" in report |
+| Missing info | Company name "Unknown" or no tags | Mark "Needs Review" in report |
+| All Notion failures | Deals extracted but all Notion writes fail | Show original message for manual logging |
 
 ### Multi-Deal Handling
 
@@ -458,9 +506,12 @@ python analyze_export.py /path/to/result.json --replay -e expected_deals.csv -o 
 3. **Deterministic Link Detection** - URLs extracted before LLM, no hallucination risk
 4. **Two-Stage Agent Architecture** - Router filters non-deals cheaply, Extractor only runs when needed
 5. **docsend2pdf.com API** - Primary DocSend extraction, handles CAPTCHA internally
-6. **Parallel Processing** - Message groups processed concurrently with unique IDs preventing race conditions
-7. **Per-Deal External Source** - Each deal can have its own referrer (for multi-deal messages)
-8. **Cloud-Ready Cleanup** - Automatic temp file cleanup with immediate + periodic strategies
+6. **Jina Reader Fallback** - GenericWebExtractor uses `r.jina.ai` for unsupported link types (Notion, Papermark, Pitch.com, etc.)
+7. **Parallel Processing** - Message groups processed concurrently with unique IDs preventing race conditions
+8. **Forward Metadata Priority** - Telegram forward origin is authoritative for source attribution, LLM extraction is fallback
+9. **Forward-Aware Grouping** - Messages from different forward origins are split into separate groups
+10. **Pipeline Transparency** - ExtractionResult carries router confidence, detected links, and fetched deck status for reporting
+11. **Cloud-Ready Cleanup** - Automatic temp file cleanup with immediate + periodic strategies
 
 ---
 
@@ -482,10 +533,13 @@ python analyze_export.py /path/to/result.json --replay -e expected_deals.csv -o 
 | Issue | Solution |
 |-------|----------|
 | DocSend extraction fails | Check docsend2pdf.com API, fallback to Playwright |
+| DocSend PDF is image-only | Ensure `ocrmypdf` + `tesseract` installed for OCR pipeline |
 | OCR quality issues | Try different `--lang` options |
 | Notion API errors | Verify database schema matches expected properties |
 | Telegram timeout | Configure `TELEGRAM_PROXY` for China |
 | Rate limiting | docsend2pdf.com has 5 req/s limit |
+| Wrong deal source | Check if message is forwarded — forward metadata takes priority |
+| Messages grouped incorrectly | Check forward origin detection in `grouping.py` |
 
 ---
 
