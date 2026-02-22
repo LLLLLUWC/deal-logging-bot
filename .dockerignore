@@ -23,6 +23,9 @@ venv/
 .DS_Store
 ._*
 
+# Claude Code
+.claude/
+
 # Output/temp (will be mounted as volume)
 output/
 temp/
