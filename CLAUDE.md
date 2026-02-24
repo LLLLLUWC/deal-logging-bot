@@ -177,8 +177,12 @@ DealExtractor.extract()
 Human intervention check (5 scenarios)
     ↓
 NotionClient.create_deal_with_retry()
+    ├→ Parse "$5M" → 5000000 for Raise/PM Valuation
+    ├→ Set Tab = "Pipeline"
     ↓
-Telegram reply (simplified report)
+add_comment() → write intro + original pitch text
+    ↓
+Telegram reply (HTML-formatted report with bold alerts)
 ```
 
 ### Running the Bot
@@ -225,6 +229,8 @@ CLEANUP_INTERVAL_MINUTES=1440        # Run periodic cleanup every 24 hours
 
 ### Telegram Report Format
 
+Reports use HTML formatting (`parse_mode="HTML"`). Human-intervention items are **bold**.
+
 ```
 Deal Logged
 Name: CompanyX | Raise $5M / Val $50M
@@ -233,25 +239,39 @@ Brief intro text under 140 chars
 Tags: DeFi, Infrastructure
 Deck: Extracted
 
+<b>DECK FAILED:</b> https://docsend.com/view/xxx...
+  CAPTCHA required - manual setup needed
+
 --Status--
 Deck: 1/1 extracted
+<b>Needs Review</b>
 
 https://www.notion.so/CompanyX-xxx
 ```
 
 ### Notion Database Schema
 
-The bot expects these properties:
+The bot writes to these properties (production DB: "New Deal Database"):
 
-| Property | Type | Description |
-|----------|------|-------------|
-| Name | title | Company/project name |
-| Tags | rich_text | Comma-separated tags |
-| OP Source | multi_select | Team member who posted |
-| External Source | rich_text | Person who referred the deal |
-| Deck | files | Pitch deck link/file |
-| Intro | rich_text | Short intro (140 chars) |
-| Memo | rich_text | Additional notes |
+| Property | Type | Description | Bot writes? |
+|----------|------|-------------|-------------|
+| Name | title | Company/project name | Yes |
+| Tags | multi_select | Deal category tags | Yes |
+| OP Source | multi_select | Team member who posted | Yes |
+| External Source | multi_select | Person who referred the deal | Yes |
+| Deck | files | Pitch deck link/file | Yes |
+| Raise | number | Raise amount (parsed from "$5M" → 5000000) | Yes |
+| PM Valuation | number | Valuation (parsed from "$50M" → 50000000) | Yes |
+| Tab | select | Pipeline tab (default: "Pipeline") | Yes |
+| Status | status | Deal status (Notion default: "Initial DD") | No (default) |
+| comments | rich_text | Intro written via Comments API | Yes (as comment) |
+| Memo | files | Additional documents | No |
+| Owner | people | Deal owner | No |
+
+**Notes:**
+- `comments` is a special Notion built-in property — cannot be set via Pages API, so intro is written using the Comments API (`add_comment()`) instead
+- `Status` is not written by the bot; Notion's default value "Initial DD" applies automatically
+- `notion-client` v2.7.0 uses `Notion-Version: 2025-09-03`, which returns empty `properties` from `databases.retrieve()` — the bot uses hardcoded `_fallback_property_types` in `bot/notion/client.py`
 
 ### DocSend Extraction
 
@@ -308,15 +328,16 @@ External source (who referred the deal) is resolved in priority order:
 
 ### Human Intervention Scenarios
 
-The bot notifies in Telegram (not Notion) when manual review may be needed:
+The bot notifies in Telegram (not Notion) when manual review may be needed. All alerts use HTML bold formatting for visibility.
 
-| Scenario | Trigger | Action |
-|----------|---------|--------|
-| Skipped with decks | Router says not-a-deal but deck links found | Notify with deck URLs |
-| Partial deck failure | Some decks extracted, some failed | Show failed deck details |
-| Low confidence | Router confidence < 0.6 | Mark "Low Confidence" in report |
-| Missing info | Company name "Unknown" or no tags | Mark "Needs Review" in report |
-| All Notion failures | Deals extracted but all Notion writes fail | Show original message for manual logging |
+| Scenario | Trigger | Telegram alert |
+|----------|---------|----------------|
+| Skipped with decks | Router says not-a-deal but deck links found | **Skipped (may need review)** + deck URLs |
+| Partial deck failure | Some decks extracted, some failed | **DECK FAILED:** + error details |
+| Low confidence | Router confidence < 0.6 | **Low Confidence** in status |
+| Missing info | Company name "Unknown" or no tags | **Needs Review** in status |
+| All Notion failures | Deals extracted but all Notion writes fail | **Failed to create Notion entries** + original message |
+| Deck extraction failed | Deck links found but content not extractable | **Needs manual review** |
 
 ### Multi-Deal Handling
 
@@ -512,6 +533,8 @@ python analyze_export.py /path/to/result.json --replay -e expected_deals.csv -o 
 9. **Forward-Aware Grouping** - Messages from different forward origins are split into separate groups
 10. **Pipeline Transparency** - ExtractionResult carries router confidence, detected links, and fetched deck status for reporting
 11. **Cloud-Ready Cleanup** - Automatic temp file cleanup with immediate + periodic strategies
+12. **Fallback Property Types** - `notion-client` v2.7.0 (Notion API 2025-09-03) returns empty DB properties; hardcoded `_fallback_property_types` in `bot/notion/client.py` ensures correct writes
+13. **Intro via Comments API** - Notion's `comments` property is read-only via Pages API; intro is written using `add_comment()` instead
 
 ---
 
@@ -535,7 +558,9 @@ python analyze_export.py /path/to/result.json --replay -e expected_deals.csv -o 
 | DocSend extraction fails | Check docsend2pdf.com API, fallback to Playwright |
 | DocSend PDF is image-only | Ensure `ocrmypdf` + `tesseract` installed for OCR pipeline |
 | OCR quality issues | Try different `--lang` options |
-| Notion API errors | Verify database schema matches expected properties |
+| Notion API errors | Verify `_fallback_property_types` matches DB schema; use `e.body` not `e.message` for error details |
+| Notion "X is not a property" | Property may be read-only (e.g. `comments`); use Comments API or remove from field_mapping |
+| Notion DB properties empty | Expected with `notion-client` v2.7.0 (API 2025-09-03); fallback types handle this |
 | Telegram timeout | Configure `TELEGRAM_PROXY` for China |
 | Rate limiting | docsend2pdf.com has 5 req/s limit |
 | Wrong deal source | Check if message is forwarded — forward metadata takes priority |
