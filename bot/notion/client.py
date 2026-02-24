@@ -21,6 +21,8 @@ class DealEntry:
     intro: str = ""  # Short intro (140 chars) for Intro field
     detailed_content: str = ""  # Full Markdown for page body
     status: Optional[str] = None  # e.g. "Needs Review"
+    raise_amount: Optional[str] = None  # "$5M" format
+    valuation: Optional[str] = None  # "$50M" format
 
     def __post_init__(self):
         if self.tags is None:
@@ -66,27 +68,31 @@ class NotionClient:
         # - Intro: rich_text (short intro, 140 chars)
         self.field_mapping = field_mapping or {
             "title": "Name",  # Page title field (title type)
-            "tags": "Tags",  # rich_text - will store as comma-separated
+            "tags": "Tags",  # multi_select
             "op_source": "OP Source",  # multi_select
-            "external_source": "External Source",  # rich_text
-            "deck": "Deck",  # files (Files & Media for PDF upload)
-            "intro": "Intro",  # rich_text (short intro)
-            "status": "Status",  # select
+            "external_source": "External Source",  # multi_select
+            "deck": "Deck",  # files (Files & Media)
+            "raise_amount": "Raise",  # number
+            "valuation": "PM Valuation",  # number
+            "tab": "Tab",  # select, default "Pipeline"
+            # intro: written as page comment via add_comment() instead of property
+            # status: not mapped — rely on Notion default "Initial DD"
         }
 
         # Hardcoded property types for when we can't read the database schema
         # (e.g., linked databases don't expose properties via API)
         self._fallback_property_types = {
             "Name": "title",
-            "Tags": "rich_text",
+            "Tags": "multi_select",
             "OP Source": "multi_select",
-            "External Source": "rich_text",
-            "Deck": "files",  # Files & Media type
-            "Memo": "rich_text",
+            "External Source": "multi_select",
+            "Deck": "files",
+            "Memo": "files",
             "Tab": "select",
-            "Status": "select",
-            "Owner": "multi_select",
-            "Intro": "rich_text",
+            "Status": "status",
+            "Owner": "people",
+            "Raise": "number",
+            "PM Valuation": "number",
         }
 
         self._database_properties = None
@@ -190,6 +196,11 @@ class NotionClient:
         elif prop_type == "select":
             return {
                 "select": {"name": str(value)}
+            }
+
+        elif prop_type == "status":
+            return {
+                "status": {"name": str(value)}
             }
 
         elif prop_type == "url":
@@ -384,6 +395,35 @@ class NotionClient:
 
         return rich_text
 
+    @staticmethod
+    def _parse_money_to_number(value: Optional[str]) -> Optional[float]:
+        """Parse money string like '$5M' to a number like 5000000.
+
+        Supports K (thousands), M (millions), B (billions) suffixes.
+
+        Args:
+            value: Money string, e.g. "$5M", "$500K", "$1.5B".
+
+        Returns:
+            Numeric value, or None if unparseable.
+        """
+        if not value:
+            return None
+        import re
+        cleaned = re.sub(r'[,$\s]', '', value.upper())
+        match = re.match(r'^([\d.]+)\s*([KMB])?$', cleaned)
+        if not match:
+            return None
+        num = float(match.group(1))
+        suffix = match.group(2)
+        if suffix == 'K':
+            num *= 1_000
+        elif suffix == 'M':
+            num *= 1_000_000
+        elif suffix == 'B':
+            num *= 1_000_000_000
+        return num
+
     def create_deal(self, deal: DealEntry) -> NotionCreateResult:
         """Create a new deal entry in Notion.
 
@@ -413,9 +453,10 @@ class NotionClient:
                 "tags": deal.tags,
                 "op_source": deal.op_source,
                 "external_source": deal.external_source,
-                "deck": deal.deck_file_path or deal.deck_url,  # Prefer local file
-                "intro": deal.intro,
-                "status": deal.status,
+                "deck": deal.deck_file_path or deal.deck_url,
+                "raise_amount": self._parse_money_to_number(deal.raise_amount),
+                "valuation": self._parse_money_to_number(deal.valuation),
+                "tab": "Pipeline",
             }
 
             for field_key, value in field_values.items():
@@ -496,10 +537,10 @@ class NotionClient:
             )
 
         except APIResponseError as e:
-            logger.error(f"Notion API error: {e.code} - {e.message}")
+            logger.error(f"Notion API error: {e.code} - {e.body}")
             return NotionCreateResult(
                 success=False,
-                error=f"Notion API error: {e.message}",
+                error=f"Notion API error: {e.body}",
             )
         except Exception as e:
             logger.exception(f"Failed to create Notion page: {e}")
@@ -615,7 +656,7 @@ class NotionClient:
         except APIResponseError as e:
             return NotionCreateResult(
                 success=False,
-                error=f"Notion API error: {e.message}",
+                error=f"Notion API error: {e.body}",
             )
         except Exception as e:
             return NotionCreateResult(
@@ -646,7 +687,7 @@ class NotionClient:
         except APIResponseError as e:
             return NotionCreateResult(
                 success=False,
-                error=f"Notion API error: {e.message}",
+                error=f"Notion API error: {e.body}",
             )
         except Exception as e:
             return NotionCreateResult(
@@ -703,7 +744,7 @@ class NotionClient:
             return True, f"Connected to database: {db_title or self.database_id}"
 
         except APIResponseError as e:
-            return False, f"Notion API error: {e.message}"
+            return False, f"Notion API error: {e.body}"
         except Exception as e:
             return False, f"Connection failed: {str(e)}"
 

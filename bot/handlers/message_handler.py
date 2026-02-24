@@ -205,6 +205,8 @@ class MessageHandler:
                     op_source=sender,
                     external_source=deal_external_source,
                     deck_url=deal.deck_url,
+                    raise_amount=deal.raise_amount,
+                    valuation=deal.valuation,
                 )
 
                 notion_result = self.notion_client.create_deal_with_retry(entry)
@@ -215,19 +217,30 @@ class MessageHandler:
                         f"{notion_result.page_url}"
                     )
 
-                    # Add original pitch text as comment
-                    if notion_result.page_id and combined_text:
+                    # Add intro + original pitch text as comments
+                    if notion_result.page_id:
                         try:
-                            prefix = f"Original message from {sender}:\n\n"
-                            pitch_comment = f"{prefix}{combined_text}"
-                            comments_added = self.notion_client.add_comment_multipart(
-                                notion_result.page_id, pitch_comment
-                            )
-                            if comments_added > 0:
-                                logger.info(
-                                    f"Added pitch text as {comments_added} comment(s) "
-                                    f"to {deal.company_name}"
+                            # Write intro as first comment (appears in Notion comments column)
+                            if deal.intro:
+                                self.notion_client.add_comment(
+                                    notion_result.page_id, deal.intro
                                 )
+                                logger.info(
+                                    f"Added intro as comment to {deal.company_name}"
+                                )
+
+                            # Write original pitch text as second comment
+                            if combined_text:
+                                prefix = f"Original message from {sender}:\n\n"
+                                pitch_comment = f"{prefix}{combined_text}"
+                                comments_added = self.notion_client.add_comment_multipart(
+                                    notion_result.page_id, pitch_comment
+                                )
+                                if comments_added > 0:
+                                    logger.info(
+                                        f"Added pitch text as {comments_added} comment(s) "
+                                        f"to {deal.company_name}"
+                                    )
                         except Exception as comment_error:
                             logger.warning(
                                 f"Comment failed for {deal.company_name}: "
@@ -509,7 +522,7 @@ class MessageHandler:
             for fd in failed_decks[:3]:
                 url_short = fd.url[:50] + "..." if len(fd.url) > 50 else fd.url
                 error_msg = fd.error or "unknown error"
-                lines.append(f"DECK FAILED: {url_short}")
+                lines.append(f"<b>DECK FAILED:</b> {url_short}")
                 lines.append(f"  {error_msg}")
 
         # Status section
@@ -519,9 +532,9 @@ class MessageHandler:
                 f"Deck: {result.decks_fetched}/{result.decks_detected} extracted"
             )
         if low_confidence:
-            status_parts.append("Low Confidence")
+            status_parts.append("<b>Low Confidence</b>")
         if deal.get("status") == "Needs Review":
-            status_parts.append("Needs Review")
+            status_parts.append("<b>Needs Review</b>")
 
         if status_parts:
             lines.append("")
@@ -585,7 +598,7 @@ class MessageHandler:
             for fd in failed_decks[:3]:
                 url_short = fd.url[:50] + "..." if len(fd.url) > 50 else fd.url
                 error_msg = fd.error or "unknown error"
-                lines.append(f"DECK FAILED: {url_short}")
+                lines.append(f"<b>DECK FAILED:</b> {url_short}")
                 lines.append(f"  {error_msg}")
             if len(failed_decks) > 3:
                 lines.append(f"  +{len(failed_decks) - 3} more failed")
@@ -597,7 +610,7 @@ class MessageHandler:
                 f"Deck: {result.decks_fetched}/{result.decks_detected} extracted"
             )
         if low_confidence:
-            status_parts.append("Low Confidence")
+            status_parts.append("<b>Low Confidence</b>")
 
         if status_parts:
             lines.append("")
@@ -628,6 +641,7 @@ class MessageHandler:
             try:
                 await message.reply_text(
                     text,
+                    parse_mode="HTML",
                     disable_web_page_preview=True,
                 )
                 return True
@@ -661,7 +675,10 @@ class MessageHandler:
         try:
             first_msg = group.messages[0].message
             error_short = error[:200] if len(error) > 200 else error
-            await first_msg.reply_text(f"Failed to log deal: {error_short}")
+            await first_msg.reply_text(
+                f"<b>Failed to log deal:</b> {error_short}",
+                parse_mode="HTML",
+            )
         except Exception as e:
             logger.error(f"Failed to send error notification: {e}")
 
@@ -687,7 +704,7 @@ class MessageHandler:
             if len(failed_company_names) > 5:
                 names_str += f" (+{len(failed_company_names) - 5} more)"
 
-            lines = [f"Some deals failed to log: {names_str}"]
+            lines = [f"<b>Some deals failed to log:</b> {names_str}"]
 
             # Add deck failure details if available
             if result and result.fetched_decks:
@@ -696,7 +713,10 @@ class MessageHandler:
                     url_short = deck.url[:40] + "..." if len(deck.url) > 40 else deck.url
                     lines.append(f"  Deck failed: {url_short} ({deck.error or 'unknown'})")
 
-            await first_msg.reply_text("\n".join(lines))
+            await first_msg.reply_text(
+                "\n".join(lines), parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
         except Exception as e:
             logger.error(f"Failed to send partial failure warning: {e}")
 
@@ -722,7 +742,7 @@ class MessageHandler:
         try:
             first_msg = group.messages[0].message
             lines = [
-                "Skipped (may need review)",
+                "<b>Skipped (may need review)</b>",
                 f"Reason: {reason}",
                 "",
                 "Deck link(s) detected:",
@@ -739,7 +759,10 @@ class MessageHandler:
             if len(deck_links) > 3:
                 lines.append(f"  +{len(deck_links) - 3} more")
 
-            await first_msg.reply_text("\n".join(lines))
+            await first_msg.reply_text(
+                "\n".join(lines), parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
         except Exception as e:
             logger.error(f"Failed to send skipped-with-decks notification: {e}")
 
@@ -765,7 +788,7 @@ class MessageHandler:
 
         try:
             first_msg = group.messages[0].message
-            lines = ["Failed to create Notion entries"]
+            lines = ["<b>Failed to create Notion entries</b>"]
 
             for d in failed_deals[:3]:
                 lines.append(f"  {d['company_name']}: {d.get('error', 'unknown')[:100]}")
@@ -783,7 +806,10 @@ class MessageHandler:
             if len(msg) > 4000:
                 msg = msg[:3997] + "..."
 
-            await first_msg.reply_text(msg)
+            await first_msg.reply_text(
+                msg, parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
         except Exception as e:
             logger.error(f"Failed to send notion-failure notification: {e}")
 
@@ -803,10 +829,13 @@ class MessageHandler:
 
         try:
             first_msg = group.messages[0].message
-            text = "Deck link(s) detected but content could not be extracted, may need manual review."
+            text = "<b>Needs manual review</b>\nDeck link(s) detected but content could not be extracted."
             if reasons:
                 text += f"\nReason: {reasons[:300]}"
-            await first_msg.reply_text(text)
+            await first_msg.reply_text(
+                text, parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
         except Exception as e:
             logger.error(f"Failed to send needs-review notification: {e}")
 
