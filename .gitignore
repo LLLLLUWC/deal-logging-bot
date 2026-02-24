@@ -67,3 +67,6 @@ logs/
 
 # Notion cache
 .notion-cache/
+
+# Local notes (not tracked)
+LOCAL_NOTES.md
