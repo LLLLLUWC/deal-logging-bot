@@ -4,6 +4,7 @@ from .base import BaseExtractor
 from .docsend import DocSendExtractor
 from .generic_web import GenericWebExtractor
 from .google_slides import GoogleSlidesExtractor
+from .papermark import PapermarkExtractor
 from .pdf import PDFExtractor
 
 __all__ = [
@@ -11,5 +12,6 @@ __all__ = [
     "DocSendExtractor",
     "GenericWebExtractor",
     "GoogleSlidesExtractor",
+    "PapermarkExtractor",
     "PDFExtractor",
 ]

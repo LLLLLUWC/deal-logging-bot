@@ -32,7 +32,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .extractors import DocSendExtractor, GenericWebExtractor, GoogleSlidesExtractor, PDFExtractor
+from .extractors import DocSendExtractor, GenericWebExtractor, GoogleSlidesExtractor, PapermarkExtractor, PDFExtractor
 from .links import DetectedLink, LinkDetector, LinkType
 from .llm import LLMExtractor
 from .models import Deal, ExtractionResult, FetchedDeck, RouterDecision
@@ -55,6 +55,7 @@ __all__ = [
     "GoogleSlidesExtractor",
     "LinkDetector",
     "LLMExtractor",
+    "PapermarkExtractor",
     "PDFExtractor",
 ]
 
@@ -169,6 +170,13 @@ class DealExtractor:
             pdf_extractor=self.pdf_extractor,
         )
 
+        # Papermark extractor (DeckExtract API + generic fallback)
+        self.papermark_extractor = PapermarkExtractor(
+            email=docsend_email or "",
+            output_dir=self.temp_dir / "papermark",
+            generic_extractor=self.generic_extractor,
+        )
+
         logger.info(
             f"DealExtractor initialized: "
             f"model={llm_model or 'kimi-k2.5'}, "
@@ -238,6 +246,21 @@ class DealExtractor:
                     f"{d.url}: {d.error}" for d in fetched_decks if not d.success
                 ]
 
+            # Flag thin content — deck "succeeded" but extracted too little
+            # (likely hit a login/verification page)
+            thin_decks = [
+                d for d in fetched_decks
+                if d.success and d.content and len(d.content) < 500
+            ]
+            if thin_decks:
+                result.needs_review = True
+                if not result.review_reasons:
+                    result.review_reasons = []
+                for d in thin_decks:
+                    result.review_reasons.append(
+                        f"{d.url}: thin content ({len(d.content)} chars, may be login page)"
+                    )
+
             return result
 
         finally:
@@ -280,7 +303,7 @@ class DealExtractor:
         cutoff_time = time.time() - (max_age * 60)
         deleted = 0
 
-        for subdir in ["pdf", "docsend", "google", "web", "pdf_downloads"]:
+        for subdir in ["pdf", "docsend", "google", "web", "papermark", "pdf_downloads"]:
             dir_path = self.temp_dir / subdir
             if not dir_path.exists():
                 continue
@@ -410,9 +433,34 @@ class DealExtractor:
             elif link.link_type == LinkType.GOOGLE_DRIVE:
                 return await self.google_extractor.extract(link.url)
 
+            elif link.link_type == LinkType.PAPERMARK:
+                result = await self.papermark_extractor.extract(link.url, password)
+                # If API returned a PDF, extract text from it
+                if result.success and result.pdf_path:
+                    pdf_result = self.pdf_extractor.extract(result.pdf_path)
+                    if pdf_result.success and pdf_result.text_content:
+                        return FetchedDeck(
+                            url=link.url,
+                            success=True,
+                            content=pdf_result.text_content,
+                            title=result.title or pdf_result.title,
+                            pdf_path=result.pdf_path,
+                        )
+                    else:
+                        error_detail = pdf_result.error or "empty text (image-only PDF, OCR may be needed)"
+                        logger.warning(f"Papermark PDF text extraction failed: {error_detail}")
+                        return FetchedDeck(
+                            url=link.url,
+                            success=False,
+                            error=f"PDF downloaded but text extraction failed: {error_detail}",
+                            title=result.title,
+                            pdf_path=result.pdf_path,
+                        )
+                return result
+
             else:
                 # Fallback: use generic web extractor for all other deck types
-                # (Notion, Papermark, Pitch.com, Loom, Dropbox, etc.)
+                # (Notion, Pitch.com, Loom, Dropbox, etc.)
                 return await self.generic_extractor.extract(link.url, password)
 
         except Exception as e:

@@ -96,8 +96,8 @@ class MessageHandler:
             if processing_msg:
                 try:
                     await processing_msg.delete()
-                except Exception:
-                    pass
+                except Exception as e2:
+                    logger.warning(f"Failed to delete processing message: {e2}")
             await self._send_error_notification(group, str(e))
 
     async def _process_group(self, group: MessageGroup, processing_msg) -> None:
@@ -131,8 +131,8 @@ class MessageHandler:
         if processing_msg:
             try:
                 await processing_msg.delete()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to delete processing message: {e}")
 
         # Handle skipped (not a deal)
         if result.skipped_reason:
@@ -148,6 +148,9 @@ class MessageHandler:
                 await self._send_review_skipped_with_decks(
                     group, result.skipped_reason, deck_links
                 )
+            elif pdf_content:
+                # PDF was attached but router still skipped — notify user
+                await self._send_skipped_pdf_notification(group, result.skipped_reason)
             return
 
         # Handle error
@@ -349,6 +352,10 @@ class MessageHandler:
             if result.success and result.text_content:
                 logger.info(f"Extracted {len(result.text_content)} chars from PDF")
                 return f"File: {doc_message.document_name}\n\n{result.text_content}"
+
+            # PDF downloaded but text extraction yielded nothing (image-only PDF)
+            logger.warning(f"PDF text extraction empty for {doc_message.document_name}")
+            return f"File: {doc_message.document_name}\n\n(PDF content could not be extracted - image-only document)"
 
         except Exception as e:
             logger.error(f"Error extracting PDF: {e}")
@@ -765,6 +772,29 @@ class MessageHandler:
             )
         except Exception as e:
             logger.error(f"Failed to send skipped-with-decks notification: {e}")
+
+    async def _send_skipped_pdf_notification(
+        self,
+        group: MessageGroup,
+        reason: str,
+    ) -> None:
+        """Send notification when router skipped but a PDF attachment was present.
+
+        Args:
+            group: The MessageGroup being processed.
+            reason: Router's skip reason.
+        """
+        if not group.messages:
+            return
+
+        try:
+            first_msg = group.messages[0].message
+            await first_msg.reply_text(
+                f"<b>Skipped (PDF attached, may need review)</b>\nReason: {reason}",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error(f"Failed to send skipped-pdf notification: {e}")
 
     async def _send_notion_failure_with_context(
         self,

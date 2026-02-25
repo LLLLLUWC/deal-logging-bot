@@ -283,12 +283,8 @@ class MessageGrouper:
         if len(group.messages) >= self.max_group_size:
             return True
 
-        # Process immediately if there's a PDF (standalone deal)
-        if latest_msg.has_document and latest_msg.document_name:
-            if latest_msg.document_name.lower().endswith('.pdf'):
-                # Only if it's the first/only message or single message group
-                if len(group.messages) == 1:
-                    return True
+        # Don't process PDFs immediately — wait for follow-up text messages
+        # (e.g., sender may post PDF + description as two separate messages)
 
         return False
 
