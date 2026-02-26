@@ -375,13 +375,13 @@ class DocSendExtractor(BaseExtractor):
                 if use_stealth:
                     await stealth_async(page)
 
-                page.set_default_timeout(45000)
+                page.set_default_timeout(60000)
 
                 # Navigate
                 try:
-                    await page.goto(url, wait_until="load", timeout=45000)
+                    await page.goto(url, wait_until="load", timeout=60000)
                 except PlaywrightTimeout:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                    await page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
                 await asyncio.sleep(3)
 

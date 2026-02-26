@@ -908,6 +908,10 @@ class MessageHandler:
         if self._looks_like_deal(message):
             return True, "looks like deal"
 
+        # Any message with a URL should go to Router for classification
+        if "http" in text.lower():
+            return True, "contains URL"
+
         if len(text) >= 50:
             return True, "long message"
 

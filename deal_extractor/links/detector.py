@@ -243,6 +243,15 @@ class LinkDetector:
         if link_type == LinkType.CALENDAR:
             return False
 
+        # Canva design links are pitch decks
+        if link_type == LinkType.WEBSITE:
+            try:
+                parsed = urlparse(url)
+                if "canva.com" in parsed.netloc and "/design/" in parsed.path:
+                    return True
+            except Exception:
+                pass
+
         # Check path for deck-related keywords
         try:
             parsed = urlparse(url)

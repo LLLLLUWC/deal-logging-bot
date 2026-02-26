@@ -45,6 +45,7 @@ Quickly analyze the message and return a JSON decision:
 - Mentions company name + funding/raise/seed/series
 - Describes a project seeking investment
 - Forwarded pitch or intro message
+- Short message with project/company name + any link (this is a deal-sharing group — project intros count as deals)
 
 **NOT a deal** (is_deal: false):
 - News article links (bloomberg, techcrunch, etc.)
@@ -99,6 +100,7 @@ Return ONLY valid JSON:
    - PDF/deck content (title, header)
    - PDF attachment filename (e.g., "BLACKBOX (1).pdf" → company is "Blackbox")
    - URL slug as fallback
+   - NEVER use the hosting platform as company name (e.g., Canva, DocSend, Google Slides, Notion are platforms, not the company being pitched)
 2. Write intro in English, under 140 characters
 3. Write detailed_content in Markdown with available sections:
    - Overview, Problem, Solution, Product, Traction, Team, Funding

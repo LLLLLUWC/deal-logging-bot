@@ -155,7 +155,7 @@ class DealExtractor:
             self.docsend_extractor = DocSendExtractor(
                 email=docsend_email,
                 password=docsend_password,
-                output_dir=self.temp_dir / "docsend",
+                output_dir=self.temp_dir,  # DocSendExtractor internally appends /docsend
             )
 
         # Google Slides extractor
