@@ -187,7 +187,7 @@ class GenericWebExtractor(BaseExtractor):
 
         async with httpx.AsyncClient(
             follow_redirects=True,
-            timeout=30.0,
+            timeout=60.0,
         ) as client:
             response = await client.get(jina_url, headers=headers)
 

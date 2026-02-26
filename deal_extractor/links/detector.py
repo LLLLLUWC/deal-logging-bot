@@ -67,7 +67,7 @@ class LinkDetector:
         LinkType.DOCSEND: [r"docsend\.com"],
         LinkType.PAPERMARK: [r"papermark\.io", r"papermark\.com"],
         LinkType.PITCH_COM: [r"pitch\.com"],
-        LinkType.NOTION: [r"notion\.so", r"notion\.site"],
+        LinkType.NOTION: [r"notion\.so", r"notion\.site", r"notion\.com"],
         LinkType.GOOGLE_DRIVE: [r"drive\.google\.com", r"docs\.google\.com"],
         LinkType.DROPBOX: [r"dropbox\.com"],
         LinkType.LOOM: [r"loom\.com"],

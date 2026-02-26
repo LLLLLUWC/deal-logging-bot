@@ -458,9 +458,13 @@ class DealExtractor:
                         )
                 return result
 
+            elif link.link_type == LinkType.NOTION:
+                resolved_url = self._resolve_notion_url(link.url)
+                return await self.generic_extractor.extract(resolved_url, password)
+
             else:
                 # Fallback: use generic web extractor for all other deck types
-                # (Notion, Pitch.com, Loom, Dropbox, etc.)
+                # (Pitch.com, Loom, Dropbox, etc.)
                 return await self.generic_extractor.extract(link.url, password)
 
         except Exception as e:
@@ -521,6 +525,24 @@ class DealExtractor:
                 success=False,
                 error=f"PDF download failed: {e}",
             )
+
+    @staticmethod
+    def _resolve_notion_url(url: str) -> str:
+        """Rewrite notion.so/{workspace}/{slug} to {workspace}.notion.site/{slug}.
+
+        Notion migrated from notion.so to notion.site. The old domain shows a
+        JS interstitial redirect that httpx and Jina Reader can't follow.
+        Rewriting skips the interstitial entirely.
+        """
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        if parsed.hostname in ("notion.so", "www.notion.so"):
+            parts = parsed.path.strip("/").split("/", 1)
+            if len(parts) == 2:
+                workspace, rest = parts
+                return f"https://{workspace}.notion.site/{rest}"
+        return url
 
     def _extract_password(self, text: str) -> Optional[str]:
         """Extract password from message text.
