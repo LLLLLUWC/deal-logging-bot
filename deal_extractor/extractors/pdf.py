@@ -95,11 +95,15 @@ class PDFExtractor:
         unique_output_dir.mkdir(parents=True, exist_ok=True)
 
         try:
+            # Use "uv run" locally, fall back to "python" in Docker/CI
+            import shutil
+            if shutil.which("uv"):
+                cmd = ["uv", "run", str(self.pdf2llm_path)]
+            else:
+                cmd = ["python", str(self.pdf2llm_path)]
+
             result = subprocess.run(
-                [
-                    "uv",
-                    "run",
-                    str(self.pdf2llm_path),
+                cmd + [
                     str(pdf_path),
                     "--output",
                     str(unique_output_dir),
