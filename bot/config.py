@@ -49,6 +49,9 @@ class Config:
     cleanup_max_age_minutes: int  # Delete files older than this
     cleanup_interval_minutes: int  # How often to run periodic cleanup
 
+    # Browser agent (opt-in, last-resort fallback)
+    browser_agent_enabled: bool
+
     # Paths
     project_root: Path
     pdf_extractor_path: Path
@@ -121,6 +124,9 @@ class Config:
         cleanup_max_age_minutes = int(os.getenv("CLEANUP_MAX_AGE_MINUTES", "1440"))  # 24 hours
         cleanup_interval_minutes = int(os.getenv("CLEANUP_INTERVAL_MINUTES", "1440"))  # 24 hours
 
+        # Browser agent (opt-in, requires browser-use + langchain-openai)
+        browser_agent_enabled = os.getenv("BROWSER_AGENT_ENABLED", "false").lower() in ("true", "1", "yes")
+
         # Paths
         pdf_extractor_path = project_root / "PDF_Extractor 2" / "pdf2llm.py"
         temp_dir = project_root / "temp"
@@ -142,6 +148,7 @@ class Config:
             cleanup_after_extract=cleanup_after_extract,
             cleanup_max_age_minutes=cleanup_max_age_minutes,
             cleanup_interval_minutes=cleanup_interval_minutes,
+            browser_agent_enabled=browser_agent_enabled,
             project_root=project_root,
             pdf_extractor_path=pdf_extractor_path,
             temp_dir=temp_dir,

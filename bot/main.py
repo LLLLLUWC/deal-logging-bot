@@ -69,6 +69,7 @@ class DealLoggingBot:
             temp_dir=self.config.temp_dir / "deal_extractor",
             cleanup_after_extract=self.config.cleanup_after_extract,
             cleanup_max_age_minutes=self.config.cleanup_max_age_minutes,
+            browser_agent_enabled=self.config.browser_agent_enabled,
         )
         logger.info(f"DealExtractor initialized: model={self.config.kimi_model}")
 

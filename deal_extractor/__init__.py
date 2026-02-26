@@ -110,6 +110,7 @@ class DealExtractor:
         temp_dir: Optional[Path] = None,
         cleanup_after_extract: bool = False,
         cleanup_max_age_minutes: int = 1440,  # 24 hours
+        browser_agent_enabled: bool = False,
     ):
         """Initialize the DealExtractor.
 
@@ -176,6 +177,23 @@ class DealExtractor:
             output_dir=self.temp_dir / "papermark",
             generic_extractor=self.generic_extractor,
         )
+
+        # Browser agent extractor (opt-in, last-resort fallback)
+        self.browser_agent_extractor = None
+        if browser_agent_enabled:
+            try:
+                from .extractors.browser_agent import BrowserAgentExtractor
+                self.browser_agent_extractor = BrowserAgentExtractor(
+                    api_key=llm_api_key,
+                    model=llm_model or "kimi-k2.5",
+                    base_url=llm_base_url,
+                    email=docsend_email,
+                    password=docsend_password,
+                    temp_dir=self.temp_dir / "browser_agent",
+                )
+                logger.info("Browser agent extractor enabled")
+            except ImportError:
+                logger.warning("browser-use not installed, browser agent disabled")
 
         logger.info(
             f"DealExtractor initialized: "
@@ -303,7 +321,7 @@ class DealExtractor:
         cutoff_time = time.time() - (max_age * 60)
         deleted = 0
 
-        for subdir in ["pdf", "docsend", "google", "web", "papermark", "pdf_downloads"]:
+        for subdir in ["pdf", "docsend", "google", "web", "papermark", "pdf_downloads", "browser_agent"]:
             dir_path = self.temp_dir / subdir
             if not dir_path.exists():
                 continue
@@ -425,6 +443,11 @@ class DealExtractor:
                             title=result.title,
                             pdf_path=result.pdf_path,
                         )
+                # Browser agent fallback for DocSend failures
+                if not result.success and self.browser_agent_extractor:
+                    logger.info(f"DocSend extractors failed, trying browser agent: {link.url}")
+                    result = await self.browser_agent_extractor.extract(link.url, password)
+
                 return result
 
             elif link.link_type == LinkType.PDF_DIRECT:
@@ -460,12 +483,20 @@ class DealExtractor:
 
             elif link.link_type == LinkType.NOTION:
                 resolved_url = self._resolve_notion_url(link.url)
-                return await self.generic_extractor.extract(resolved_url, password)
+                result = await self.generic_extractor.extract(resolved_url, password)
+                if not result.success and self.browser_agent_extractor:
+                    logger.info(f"Generic extractor failed for Notion, trying browser agent: {link.url}")
+                    result = await self.browser_agent_extractor.extract(link.url, password)
+                return result
 
             else:
                 # Fallback: use generic web extractor for all other deck types
                 # (Pitch.com, Loom, Dropbox, etc.)
-                return await self.generic_extractor.extract(link.url, password)
+                result = await self.generic_extractor.extract(link.url, password)
+                if not result.success and self.browser_agent_extractor:
+                    logger.info(f"Generic extractor failed, trying browser agent: {link.url}")
+                    result = await self.browser_agent_extractor.extract(link.url, password)
+                return result
 
         except Exception as e:
             logger.exception(f"Fetch error: {e}")
