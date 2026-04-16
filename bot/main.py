@@ -111,7 +111,7 @@ class DealLoggingBot:
             deal_extractor=self.deal_extractor,
             notion_client=notion_client,
             grouper=grouper,
-            target_group_id=self.config.telegram_group_id,
+            target_group_ids=self.config.telegram_group_ids,
             bot=self.application.bot,
             temp_dir=self.config.temp_dir,
         )
@@ -129,7 +129,7 @@ class DealLoggingBot:
         )
 
         logger.info("Bot setup complete")
-        logger.info(f"Monitoring Telegram group ID: {self.config.telegram_group_id}")
+        logger.info(f"Monitoring Telegram group ID(s): {sorted(self.config.telegram_group_ids)}")
         logger.info(f"Message grouping timeout: {self.config.message_grouping_timeout}s")
         logger.info(
             f"Cleanup: immediate={self.config.cleanup_after_extract}, "

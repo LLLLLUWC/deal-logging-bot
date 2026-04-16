@@ -22,7 +22,7 @@ class Config:
 
     # Telegram
     telegram_bot_token: str
-    telegram_group_id: int
+    telegram_group_ids: frozenset[int]  # Supports multiple groups (comma-separated in env)
 
     # Notion
     notion_api_key: str
@@ -88,7 +88,12 @@ class Config:
         telegram_group_id_str = os.getenv("TELEGRAM_GROUP_ID")
         if not telegram_group_id_str:
             raise ValueError("TELEGRAM_GROUP_ID is required")
-        telegram_group_id = int(telegram_group_id_str)
+        # Support comma-separated group IDs for monitoring multiple groups
+        telegram_group_ids = frozenset(
+            int(gid.strip()) for gid in telegram_group_id_str.split(",") if gid.strip()
+        )
+        if not telegram_group_ids:
+            raise ValueError("TELEGRAM_GROUP_ID must contain at least one group ID")
 
         notion_api_key = os.getenv("NOTION_API_KEY")
         if not notion_api_key:
@@ -134,7 +139,7 @@ class Config:
 
         return cls(
             telegram_bot_token=telegram_bot_token,
-            telegram_group_id=telegram_group_id,
+            telegram_group_ids=telegram_group_ids,
             notion_api_key=notion_api_key,
             notion_database_id=notion_database_id,
             kimi_api_key=kimi_api_key,

@@ -24,7 +24,7 @@ class MessageHandler:
         deal_extractor: DealExtractor,
         notion_client: NotionClient,
         grouper: MessageGrouper,
-        target_group_id: int,
+        target_group_ids: frozenset[int],
         bot: Bot,
         temp_dir: Path,
     ):
@@ -34,14 +34,14 @@ class MessageHandler:
             deal_extractor: DealExtractor for extracting deal information.
             notion_client: NotionClient for creating Notion entries.
             grouper: MessageGrouper for grouping related messages.
-            target_group_id: Telegram group ID to monitor.
+            target_group_ids: Set of Telegram group IDs to monitor.
             bot: Telegram Bot instance.
             temp_dir: Temporary directory for file downloads.
         """
         self.deal_extractor = deal_extractor
         self.notion_client = notion_client
         self.grouper = grouper
-        self.target_group_id = target_group_id
+        self.target_group_ids = target_group_ids
         self.bot = bot
         self.temp_dir = temp_dir
 
@@ -63,8 +63,8 @@ class MessageHandler:
         text_preview = (message.text or message.caption or "")[:50]
         logger.info(f"[Chat {chat_id}] Message from {sender}: {text_preview}...")
 
-        if chat_id != self.target_group_id:
-            logger.debug(f"Skipping: chat {chat_id} != target {self.target_group_id}")
+        if chat_id not in self.target_group_ids:
+            logger.debug(f"Skipping: chat {chat_id} not in targets {self.target_group_ids}")
             return
 
         should_process, reason = self._should_process_with_reason(message)
