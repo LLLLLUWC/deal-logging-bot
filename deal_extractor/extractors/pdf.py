@@ -3,6 +3,7 @@
 import hashlib
 import logging
 import subprocess
+import sys
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -95,12 +96,12 @@ class PDFExtractor:
         unique_output_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            # Use "uv run" locally, fall back to "python" in Docker/CI
+            # Use "uv run" locally, fall back to current interpreter (venv python) elsewhere
             import shutil
             if shutil.which("uv"):
                 cmd = ["uv", "run", str(self.pdf2llm_path)]
             else:
-                cmd = ["python", str(self.pdf2llm_path)]
+                cmd = [sys.executable, str(self.pdf2llm_path)]
 
             result = subprocess.run(
                 cmd + [
