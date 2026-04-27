@@ -1,5 +1,6 @@
 """Telegram message handling with DealExtractor integration."""
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Optional
@@ -7,7 +8,7 @@ from typing import Optional
 from telegram import Bot, Message, Update
 from telegram.ext import ContextTypes
 
-from deal_extractor import DealExtractor
+from deal_extractor import DealExtractor, DuplicateInfo
 
 from ..notion.client import DealEntry, NotionClient
 from ..utils.grouping import MessageGroup, MessageGrouper
@@ -120,11 +121,12 @@ class MessageHandler:
         # Download and extract PDF attachment if present
         pdf_content = await self._extract_pdf_content(group)
 
-        # Run DealExtractor
+        # Run DealExtractor with dedup gate (Stage 1.5)
         result = await self.deal_extractor.extract(
             text=llm_text,
             sender=sender,
             pdf_content=pdf_content,
+            dedup_check=self._build_dedup_check(),
         )
 
         # Delete processing message
@@ -133,6 +135,15 @@ class MessageHandler:
                 await processing_msg.delete()
             except Exception as e:
                 logger.warning(f"Failed to delete processing message: {e}")
+
+        # Dedup gate hit: existing Notion page matched company + deck URL
+        if result.duplicate:
+            logger.info(
+                f"Duplicate deal detected: {result.duplicate.company_name} -> "
+                f"{result.duplicate.notion_page_url}"
+            )
+            await self._send_duplicate_notification(group, result.duplicate)
+            return
 
         # Handle skipped (not a deal)
         if result.skipped_reason:
@@ -306,6 +317,70 @@ class MessageHandler:
             await self._send_notion_failure_with_context(
                 group, failed_deals, combined_text, sender
             )
+
+    def _build_dedup_check(self):
+        """Build an async dedup_check callback bound to the Notion client.
+
+        DealExtractor calls this between Router and Extractor, only when
+        deck URL(s) were detected. We wrap the sync notion_client call in
+        `asyncio.to_thread` to avoid blocking the event loop.
+        """
+        notion_client = self.notion_client
+
+        async def dedup_check(
+            company_hints: list[str],
+            deck_urls: list[str],
+        ) -> Optional[DuplicateInfo]:
+            try:
+                found = await asyncio.to_thread(
+                    notion_client.find_duplicate, company_hints, deck_urls
+                )
+            except Exception as e:
+                logger.warning(f"dedup_check failed (proceeding): {e}")
+                return None
+
+            if not found:
+                return None
+
+            return DuplicateInfo(
+                company_name=found["company_name"],
+                deck_url=found["deck_url"],
+                notion_page_id=found["page_id"],
+                notion_page_url=found["page_url"],
+                matched_company_name=found.get("matched_company_name", ""),
+            )
+
+        return dedup_check
+
+    async def _send_duplicate_notification(
+        self,
+        group: MessageGroup,
+        duplicate: DuplicateInfo,
+    ) -> None:
+        """Notify the Telegram group that this deal already exists.
+
+        Args:
+            group: The MessageGroup being processed.
+            duplicate: DuplicateInfo describing the existing Notion page.
+        """
+        if not group.messages:
+            return
+
+        try:
+            first_msg = group.messages[0].message
+            display_name = duplicate.matched_company_name or duplicate.company_name
+            lines = [
+                "<b>Duplicate Deal — skipped</b>",
+                f"Name: {display_name}",
+                f"Deck: {duplicate.deck_url}",
+                "",
+                f"Existing entry: {duplicate.notion_page_url}",
+            ]
+            await self._send_telegram_message_with_retry(
+                first_msg, "\n".join(lines), max_retries=3
+            )
+        except Exception as e:
+            logger.error(f"Failed to send duplicate notification: {e}")
 
     async def _extract_pdf_content(self, group: MessageGroup) -> Optional[str]:
         """Extract PDF attachment content from message group.

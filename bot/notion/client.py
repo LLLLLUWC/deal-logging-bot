@@ -729,6 +729,136 @@ class NotionClient:
 
         return None
 
+    @staticmethod
+    def _normalize_url(url: Optional[str]) -> str:
+        """Normalize a URL for dedup comparison.
+
+        Strips query string and fragment, lowercases scheme+host,
+        trims trailing slash on path. Path itself stays case-sensitive
+        because slugs/IDs in DocSend, Pitch, etc. are case-sensitive.
+        """
+        if not url:
+            return ""
+        from urllib.parse import urlparse
+
+        try:
+            p = urlparse(url.strip())
+        except Exception:
+            return url.strip()
+
+        scheme = (p.scheme or "https").lower()
+        netloc = (p.netloc or "").lower()
+        path = (p.path or "").rstrip("/")
+        return f"{scheme}://{netloc}{path}"
+
+    @staticmethod
+    def _extract_deck_urls_from_page(page: dict, deck_prop_name: str) -> list[str]:
+        """Read the Deck files property from a Notion page response.
+
+        Returns a list of external URLs (skips internally-uploaded files,
+        which we don't write).
+        """
+        props = page.get("properties", {}) or {}
+        deck_prop = props.get(deck_prop_name) or {}
+        files = deck_prop.get("files") or []
+        urls: list[str] = []
+        for f in files:
+            ext = f.get("external") or {}
+            url = ext.get("url")
+            if url:
+                urls.append(url)
+        return urls
+
+    def find_duplicate(
+        self,
+        company_hints: list[str],
+        deck_urls: list[str],
+    ) -> Optional[dict]:
+        """Find an existing Notion page matching company name + deck URL.
+
+        For each hint, query the DB by title `contains` (case-insensitive in
+        Notion API), then compare each candidate page's `Deck` files against
+        `deck_urls` after URL normalization. Any URL match counts as a hit.
+
+        Args:
+            company_hints: Candidate company names (typically Router output).
+            deck_urls: Detected deck URLs from the current message.
+
+        Returns:
+            dict with keys {company_name, deck_url, page_id, page_url,
+            matched_company_name} on hit, else None.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        if not company_hints or not deck_urls:
+            return None
+
+        title_prop = self.field_mapping.get("title", "Name")
+        deck_prop = self.field_mapping.get("deck", "Deck")
+
+        # Normalize the URLs we're hunting for
+        wanted = {self._normalize_url(u) for u in deck_urls if u}
+        wanted.discard("")
+        if not wanted:
+            return None
+
+        # Hints shorter than 3 chars match too aggressively in `contains`
+        hints = [h.strip() for h in company_hints if h and len(h.strip()) >= 3]
+        if not hints:
+            return None
+
+        seen_page_ids: set[str] = set()
+
+        for hint in hints:
+            try:
+                response = self.client.databases.query(
+                    database_id=self.database_id,
+                    filter={
+                        "property": title_prop,
+                        "title": {"contains": hint},
+                    },
+                    page_size=20,
+                )
+            except APIResponseError as e:
+                logger.warning(f"find_duplicate query failed for hint '{hint}': {e}")
+                continue
+            except Exception as e:
+                logger.warning(f"find_duplicate unexpected error for hint '{hint}': {e}")
+                continue
+
+            for page in response.get("results", []):
+                page_id = page.get("id")
+                if not page_id or page_id in seen_page_ids:
+                    continue
+                seen_page_ids.add(page_id)
+
+                page_deck_urls = self._extract_deck_urls_from_page(page, deck_prop)
+                if not page_deck_urls:
+                    continue
+
+                for url in page_deck_urls:
+                    if self._normalize_url(url) in wanted:
+                        # Read title for reporting
+                        title_data = (
+                            page.get("properties", {})
+                            .get(title_prop, {})
+                            .get("title", [])
+                        )
+                        existing_title = "".join(
+                            t.get("plain_text", "") for t in title_data
+                        ).strip() or hint
+
+                        return {
+                            "company_name": hint,
+                            "deck_url": url,
+                            "page_id": page_id,
+                            "page_url": page.get("url", ""),
+                            "matched_company_name": existing_title,
+                        }
+
+        return None
+
     def validate_connection(self) -> tuple[bool, str]:
         """Validate that the Notion connection works.
 

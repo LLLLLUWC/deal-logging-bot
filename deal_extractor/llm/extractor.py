@@ -67,6 +67,101 @@ class LLMExtractor:
         self.link_detector = LinkDetector()
         logger.info(f"LLMExtractor initialized: model={self.model}, base_url={self.base_url}")
 
+    async def route(
+        self,
+        message_text: str,
+        sender: str,
+        pdf_content: Optional[str] = None,
+    ) -> tuple[RouterDecision, int]:
+        """Run Stage 1 (Router) only. Useful when you want to interpose
+        logic between Router and Extractor (e.g. a dedup check).
+
+        Args:
+            message_text: The message content.
+            sender: Message sender.
+            pdf_content: Pre-extracted PDF content (used as attachment hint only).
+
+        Returns:
+            Tuple of (RouterDecision, router_tokens).
+        """
+        pdf_attachment_info = None
+        if pdf_content:
+            if pdf_content.startswith("File: "):
+                pdf_attachment_info = pdf_content.split("\n")[0].replace("File: ", "")
+            else:
+                pdf_attachment_info = "PDF attached"
+
+        decision, tokens = await self._run_router(
+            message_text, sender, pdf_attachment_info
+        )
+
+        logger.info(
+            f"Router: is_deal={decision.is_deal}, "
+            f"confidence={decision.confidence}, "
+            f"reason={decision.reason}"
+        )
+        return decision, tokens
+
+    async def extract_from_decks(
+        self,
+        message_text: str,
+        sender: str,
+        router_decision: RouterDecision,
+        router_tokens: int,
+        fetched_decks: list[FetchedDeck],
+        pdf_content: Optional[str] = None,
+    ) -> ExtractionResult:
+        """Run Stage 2 (Extractor) given a Router decision.
+
+        Args:
+            message_text: The message content.
+            sender: Message sender.
+            router_decision: Decision from a prior `route()` call.
+            router_tokens: Tokens used by Router (for accounting).
+            fetched_decks: Pre-fetched deck contents.
+            pdf_content: Pre-extracted PDF content (added as a synthetic deck).
+
+        Returns:
+            ExtractionResult with extracted deals.
+        """
+        # Include PDF content as a fetched deck
+        if pdf_content:
+            fetched_decks = list(fetched_decks) + [
+                FetchedDeck(
+                    url="[PDF Attachment]",
+                    success=True,
+                    content=pdf_content,
+                )
+            ]
+
+        deals, extractor_tokens = await self._run_extractor(
+            message_text=message_text,
+            sender=sender,
+            fetched_decks=fetched_decks,
+            company_hints=router_decision.company_hints,
+        )
+
+        deals = self._assign_deck_urls(deals, fetched_decks)
+
+        total_tokens = router_tokens + extractor_tokens
+        decks_fetched = len([d for d in fetched_decks if d.success])
+
+        logger.info(
+            f"Extractor: {len(deals)} deals, "
+            f"tokens: router={router_tokens}, extractor={extractor_tokens}"
+        )
+
+        return ExtractionResult(
+            success=True,
+            deals=deals,
+            router_tokens=router_tokens,
+            extractor_tokens=extractor_tokens,
+            total_tokens=total_tokens,
+            decks_fetched=decks_fetched,
+            router_confidence=router_decision.confidence,
+            router_reason=router_decision.reason,
+        )
+
     async def extract(
         self,
         message_text: str,
@@ -87,35 +182,10 @@ class LLMExtractor:
         """
         fetched_decks = fetched_decks or []
 
-        # Include PDF content as a fetched deck
-        if pdf_content:
-            fetched_decks.append(
-                FetchedDeck(
-                    url="[PDF Attachment]",
-                    success=True,
-                    content=pdf_content,
-                )
-            )
-
-        # Stage 1: Router
-        pdf_attachment_info = None
-        if pdf_content:
-            if pdf_content.startswith("File: "):
-                pdf_attachment_info = pdf_content.split("\n")[0].replace("File: ", "")
-            else:
-                pdf_attachment_info = "PDF attached"
-
-        router_decision, router_tokens = await self._run_router(
-            message_text, sender, pdf_attachment_info
+        router_decision, router_tokens = await self.route(
+            message_text, sender, pdf_content
         )
 
-        logger.info(
-            f"Router: is_deal={router_decision.is_deal}, "
-            f"confidence={router_decision.confidence}, "
-            f"reason={router_decision.reason}"
-        )
-
-        # Skip if not a deal
         if not router_decision.is_deal:
             return ExtractionResult(
                 success=True,
@@ -126,34 +196,13 @@ class LLMExtractor:
                 router_reason=router_decision.reason,
             )
 
-        # Stage 2: Extractor
-        deals, extractor_tokens = await self._run_extractor(
+        return await self.extract_from_decks(
             message_text=message_text,
             sender=sender,
-            fetched_decks=fetched_decks,
-            company_hints=router_decision.company_hints,
-        )
-
-        # Auto-assign deck URLs
-        deals = self._assign_deck_urls(deals, fetched_decks)
-
-        total_tokens = router_tokens + extractor_tokens
-        decks_fetched = len([d for d in fetched_decks if d.success])
-
-        logger.info(
-            f"Extractor: {len(deals)} deals, "
-            f"tokens: router={router_tokens}, extractor={extractor_tokens}"
-        )
-
-        return ExtractionResult(
-            success=True,
-            deals=deals,
+            router_decision=router_decision,
             router_tokens=router_tokens,
-            extractor_tokens=extractor_tokens,
-            total_tokens=total_tokens,
-            decks_fetched=decks_fetched,
-            router_confidence=router_decision.confidence,
-            router_reason=router_decision.reason,
+            fetched_decks=fetched_decks,
+            pdf_content=pdf_content,
         )
 
     async def _run_router(
