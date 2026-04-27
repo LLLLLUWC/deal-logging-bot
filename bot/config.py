@@ -74,11 +74,11 @@ class Config:
         # Determine project root
         project_root = Path(__file__).parent.parent.resolve()
 
-        # Load .env file
+        # Load .env file (override shell env so project config is authoritative)
         if env_path:
-            load_dotenv(env_path)
+            load_dotenv(env_path, override=True)
         else:
-            load_dotenv(project_root / ".env")
+            load_dotenv(project_root / ".env", override=True)
 
         # Required variables
         telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
