@@ -40,7 +40,7 @@ class LLMExtractor:
     """
 
     # Default configuration
-    DEFAULT_MODEL = "kimi-k2.5"
+    DEFAULT_MODEL = "kimi-k2.6"
     DEFAULT_BASE_URL = "https://api.moonshot.cn/v1"
 
     def __init__(
@@ -193,7 +193,6 @@ class LLMExtractor:
                 "max_tokens": 500,
             }
 
-            # Add thinking mode disable for Kimi
             if "kimi" in self.model.lower() or "moonshot" in self.base_url.lower():
                 kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
 
@@ -276,10 +275,7 @@ class LLMExtractor:
             for i, deck in enumerate(fetched_decks, 1):
                 prompt_parts.append(f"\n### Deck {i}: {deck.url}")
                 if deck.success and deck.content:
-                    content = deck.content[:6000]
-                    if len(deck.content) > 6000:
-                        content += "\n[Content truncated...]"
-                    prompt_parts.append(content)
+                    prompt_parts.append(deck.content)
                 elif deck.error:
                     prompt_parts.append(f"(Fetch failed: {deck.error})")
                 else:
@@ -296,12 +292,7 @@ class LLMExtractor:
                     {"role": "system", "content": EXTRACTOR_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
-                "max_tokens": 8000,
             }
-
-            # Add thinking mode disable for Kimi
-            if "kimi" in self.model.lower() or "moonshot" in self.base_url.lower():
-                kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
 
             response = self.client.chat.completions.create(**kwargs)
 

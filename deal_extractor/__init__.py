@@ -185,7 +185,7 @@ class DealExtractor:
                 from .extractors.browser_agent import BrowserAgentExtractor
                 self.browser_agent_extractor = BrowserAgentExtractor(
                     api_key=llm_api_key,
-                    model=llm_model or "kimi-k2.5",
+                    model=llm_model or "kimi-k2.6",
                     base_url=llm_base_url,
                     email=docsend_email,
                     password=docsend_password,
@@ -197,7 +197,7 @@ class DealExtractor:
 
         logger.info(
             f"DealExtractor initialized: "
-            f"model={llm_model or 'kimi-k2.5'}, "
+            f"model={llm_model or 'kimi-k2.6'}, "
             f"docsend={'enabled' if docsend_email else 'disabled'}, "
             f"cleanup={'immediate' if cleanup_after_extract else 'manual'}"
         )
