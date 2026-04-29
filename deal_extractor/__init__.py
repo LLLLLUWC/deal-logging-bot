@@ -30,21 +30,26 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from .extractors import DocSendExtractor, GenericWebExtractor, GoogleSlidesExtractor, PapermarkExtractor, PDFExtractor
 from .links import DetectedLink, LinkDetector, LinkType
 from .llm import LLMExtractor
-from .models import Deal, ExtractionResult, FetchedDeck, RouterDecision
+from .models import Deal, DuplicateInfo, ExtractionResult, FetchedDeck, RouterDecision
 
 __version__ = "0.1.0"
+
+# Signature: dedup_check(company_hints, deck_urls) -> Optional[DuplicateInfo]
+DedupCheck = Callable[[list[str], list[str]], Awaitable[Optional[DuplicateInfo]]]
 
 __all__ = [
     # Main class
     "DealExtractor",
+    "DedupCheck",
     # Models
     "Deal",
     "DetectedLink",
+    "DuplicateInfo",
     "ExtractionResult",
     "FetchedDeck",
     "LinkType",
@@ -207,16 +212,30 @@ class DealExtractor:
         text: str,
         sender: str,
         pdf_content: Optional[str] = None,
+        dedup_check: Optional[DedupCheck] = None,
     ) -> ExtractionResult:
         """Extract deals from a message.
+
+        Pipeline order:
+            1. Detect deck links
+            2. Run Router (Stage 1) — cheap, no deck content
+            3. Dedup gate (Stage 1.5) — if Router=is_deal AND deck URL(s)
+               detected AND `dedup_check` provided, call it. If a duplicate is
+               found, short-circuit: return ExtractionResult with `duplicate`
+               set, no decks fetched, no Extractor called.
+            4. Fetch deck contents
+            5. Run Extractor (Stage 2)
 
         Args:
             text: The message content.
             sender: Message sender (OP Source).
             pdf_content: Pre-extracted PDF content (optional).
+            dedup_check: Optional callback to check for an existing Notion
+                page matching company name + deck URL. Skipped when no deck
+                URL is detected.
 
         Returns:
-            ExtractionResult with extracted deals.
+            ExtractionResult with extracted deals (or `duplicate` set).
         """
         logger.info(f"Processing message from {sender}")
 
@@ -230,31 +249,82 @@ class DealExtractor:
 
             logger.info(f"Found {len(detected_links)} deck link(s)")
 
-            # Step 2: Fetch deck contents
-            fetched_decks: list[FetchedDeck] = []
+            # Step 2: Router (cheap — text only, no decks)
+            router_decision, router_tokens = await self.llm_extractor.route(
+                message_text=text,
+                sender=sender,
+                pdf_content=pdf_content,
+            )
 
+            # Skip if Router says not a deal
+            if not router_decision.is_deal:
+                result = ExtractionResult(
+                    success=True,
+                    skipped_reason=router_decision.reason,
+                    router_tokens=router_tokens,
+                    total_tokens=router_tokens,
+                    router_confidence=router_decision.confidence,
+                    router_reason=router_decision.reason,
+                )
+                result.decks_detected = len(detected_links)
+                result.detected_links = detected_links
+                return result
+
+            # Step 3: Dedup gate (Stage 1.5)
+            # Only fires when Router says is_deal AND we have deck URLs to compare.
+            # No deck URL → skip dedup, fetch + Extract as usual.
+            deck_urls = [link.url for link in detected_links]
+            if dedup_check is not None and deck_urls and router_decision.company_hints:
+                try:
+                    dup = await dedup_check(
+                        router_decision.company_hints,
+                        deck_urls,
+                    )
+                except Exception as e:
+                    logger.warning(f"dedup_check raised, proceeding without dedup: {e}")
+                    dup = None
+
+                if dup is not None:
+                    logger.info(
+                        f"Dedup hit: {dup.company_name} matches existing page "
+                        f"{dup.notion_page_url}"
+                    )
+                    result = ExtractionResult(
+                        success=True,
+                        router_tokens=router_tokens,
+                        total_tokens=router_tokens,
+                        router_confidence=router_decision.confidence,
+                        router_reason=router_decision.reason,
+                        duplicate=dup,
+                    )
+                    result.decks_detected = len(detected_links)
+                    result.detected_links = detected_links
+                    return result
+
+            # Step 4: Fetch deck contents (only reached for non-duplicates)
+            fetched_decks: list[FetchedDeck] = []
             for link in detected_links:
                 deck = await self._fetch_deck(link, password)
                 fetched_decks.append(deck)
-
-                # Track PDF path for cleanup
                 if deck.pdf_path:
                     self._pending_cleanup.append(deck.pdf_path)
 
             decks_fetched = len([d for d in fetched_decks if d.success])
             logger.info(f"Fetched {decks_fetched}/{len(detected_links)} deck(s)")
 
-            # Step 3: LLM extraction
-            result = await self.llm_extractor.extract(
+            # Step 5: Extractor (Stage 2)
+            result = await self.llm_extractor.extract_from_decks(
                 message_text=text,
                 sender=sender,
+                router_decision=router_decision,
+                router_tokens=router_tokens,
                 fetched_decks=fetched_decks,
                 pdf_content=pdf_content,
             )
 
-            # Step 4: Set deck stats, pipeline data, and needs_review flag
+            # Set deck stats, pipeline data, and needs_review flag
             result.decks_detected = len(detected_links)
-            result.decks_fetched = decks_fetched  # Override LLM layer value
+            result.decks_fetched = decks_fetched
             result.detected_links = detected_links
             result.fetched_decks = fetched_decks
 

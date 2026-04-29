@@ -33,6 +33,17 @@ class Deal:
 
 
 @dataclass
+class DuplicateInfo:
+    """Info about a duplicate deal already in Notion."""
+
+    company_name: str
+    deck_url: str
+    notion_page_id: str
+    notion_page_url: str
+    matched_company_name: str = ""  # Actual page title in Notion (may differ in case)
+
+
+@dataclass
 class ExtractionResult:
     """Result from DealExtractor.extract()."""
 
@@ -61,6 +72,9 @@ class ExtractionResult:
     # Review flag
     needs_review: bool = False
     review_reasons: list[str] = field(default_factory=list)
+
+    # Dedup gate (Stage 1.5): set when an existing Notion page matches
+    duplicate: Optional[DuplicateInfo] = None
 
 
 @dataclass

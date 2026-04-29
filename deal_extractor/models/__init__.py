@@ -2,6 +2,7 @@
 
 from .types import (
     Deal,
+    DuplicateInfo,
     ExtractionResult,
     FetchedDeck,
     RouterDecision,
@@ -9,6 +10,7 @@ from .types import (
 
 __all__ = [
     "Deal",
+    "DuplicateInfo",
     "ExtractionResult",
     "FetchedDeck",
     "RouterDecision",
