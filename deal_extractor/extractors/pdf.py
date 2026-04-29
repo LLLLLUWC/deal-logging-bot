@@ -113,7 +113,7 @@ class PDFExtractor:
                 ],
                 capture_output=True,
                 text=True,
-                timeout=300,
+                timeout=900,
             )
 
             if result.returncode != 0:
@@ -164,7 +164,7 @@ class PDFExtractor:
         except subprocess.TimeoutExpired:
             return PDFExtractionResult(
                 success=False,
-                error="PDF extraction timed out after 5 minutes",
+                error="PDF extraction timed out after 15 minutes",
             )
         except Exception as e:
             return PDFExtractionResult(
