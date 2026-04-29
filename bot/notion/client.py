@@ -96,6 +96,36 @@ class NotionClient:
         }
 
         self._database_properties = None
+        self._data_source_id: Optional[str] = None
+
+    def _get_data_source_id(self) -> Optional[str]:
+        """Resolve and cache the primary data_source_id for the database.
+
+        Notion API 2025-09-03 deprecated `databases.query` in favor of
+        `data_sources.query`. A database has one or more data sources;
+        we use the first one.
+
+        Returns:
+            data_source_id string, or None if lookup fails.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        if self._data_source_id is not None:
+            return self._data_source_id
+
+        try:
+            db = self.client.databases.retrieve(database_id=self.database_id)
+            data_sources = db.get("data_sources") or []
+            if not data_sources:
+                logger.warning("Database has no data_sources field; "
+                               "data_sources.query unavailable")
+                return None
+            self._data_source_id = data_sources[0].get("id")
+            return self._data_source_id
+        except Exception as e:
+            logger.warning(f"Failed to resolve data_source_id: {e}")
+            return None
 
     def _get_database_properties(self, force_refresh: bool = False) -> dict[str, Any]:
         """Fetch and cache database property schema.
@@ -808,12 +838,23 @@ class NotionClient:
         if not hints:
             return None
 
+        # Notion API 2025-09-03: query goes through data_sources, not databases
+        data_source_id = self._get_data_source_id()
+        if not data_source_id:
+            logger.warning("find_duplicate: no data_source_id; skipping dedup check")
+            return None
+
+        logger.info(
+            f"find_duplicate: hints={hints}, "
+            f"deck_urls={list(wanted)}"
+        )
+
         seen_page_ids: set[str] = set()
 
         for hint in hints:
             try:
-                response = self.client.databases.query(
-                    database_id=self.database_id,
+                response = self.client.data_sources.query(
+                    data_source_id=data_source_id,
                     filter={
                         "property": title_prop,
                         "title": {"contains": hint},
@@ -827,13 +868,21 @@ class NotionClient:
                 logger.warning(f"find_duplicate unexpected error for hint '{hint}': {e}")
                 continue
 
-            for page in response.get("results", []):
+            results = response.get("results", [])
+            logger.info(
+                f"find_duplicate: hint='{hint}' matched {len(results)} page(s)"
+            )
+
+            for page in results:
                 page_id = page.get("id")
                 if not page_id or page_id in seen_page_ids:
                     continue
                 seen_page_ids.add(page_id)
 
                 page_deck_urls = self._extract_deck_urls_from_page(page, deck_prop)
+                logger.info(
+                    f"find_duplicate: page {page_id} has Deck URLs: {page_deck_urls}"
+                )
                 if not page_deck_urls:
                     continue
 
